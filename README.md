@@ -20,3 +20,6 @@ unzip cutlass.zip
 可能的报错：raise RuntimeError(f"MD5 mismatch between the server and the downloaded file {file_path}")
 RuntimeError: MD5 mismatch between the server and the downloaded file /root/.cache/jittor/cutlass/cutlass.zip，
 cutlass对应的清华网盘无法访问，导致程序只创建了一个空压缩包，可以将cutlass的下载链接更换为[https://cg.cs.tsinghua.edu.cn/jittor/assets/cutlass.zip]
+
+
+## 实验结果对齐：
