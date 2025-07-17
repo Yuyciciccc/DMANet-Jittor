@@ -1,13 +1,11 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.autograd import Variable
+import jittor as jt
+import jittor.nn as nn
 
 
 class FocalLoss(nn.Module):
     #def __init__(self):
 
-    def forward(self, classifications, regressions, anchors, annotations):
+    def execute(self, classifications, regressions, anchors, annotations):
         alpha = 0.25
         gamma = 2.0
         batch_size = classifications.shape[0]
@@ -29,52 +27,30 @@ class FocalLoss(nn.Module):
             bbox_annotation = annotations[j, :, :]
             bbox_annotation = bbox_annotation[bbox_annotation[:, 4] != -1]
 
-            classification = torch.clamp(classification, 1e-4, 1.0 - 1e-4)
+            classification = jt.clamp(classification, 1e-4, 1.0 - 1e-4)
 
             if bbox_annotation.shape[0] == 0:
-                if torch.cuda.is_available():
-                    alpha_factor = torch.ones(classification.shape).cuda() * alpha
-
-                    alpha_factor = 1. - alpha_factor
-                    focal_weight = classification
-                    focal_weight = alpha_factor * torch.pow(focal_weight, gamma)
-
-                    bce = -(torch.log(1.0 - classification))
-
-                    # cls_loss = focal_weight * torch.pow(bce, gamma)
-                    cls_loss = focal_weight * bce
-                    classification_losses.append(cls_loss.sum())
-                    regression_losses.append(torch.tensor(0).float().cuda())
-
-                else:
-                    alpha_factor = torch.ones(classification.shape) * alpha
-
-                    alpha_factor = 1. - alpha_factor
-                    focal_weight = classification
-                    focal_weight = alpha_factor * torch.pow(focal_weight, gamma)
-
-                    bce = -(torch.log(1.0 - classification))
-
-                    # cls_loss = focal_weight * torch.pow(bce, gamma)
-                    cls_loss = focal_weight * bce
-                    classification_losses.append(cls_loss.sum())
-                    regression_losses.append(torch.tensor(0).float())
-
+                alpha_factor = jt.ones(classification.shape) * alpha
+                alpha_factor = 1. - alpha_factor
+                focal_weight = classification
+                focal_weight = alpha_factor * jt.pow(focal_weight, gamma)
+                bce = -(jt.log(1.0 - classification))
+                cls_loss = focal_weight * bce
+                classification_losses.append(cls_loss.sum())
+                regression_losses.append(jt.array(0).float())
                 continue
 
             IoU = calc_iou(anchors[0, :, :], bbox_annotation[:, :4])  # num_anchors x num_annotations
 
-            IoU_max, IoU_argmax = torch.max(IoU, dim=1) # num_anchors x 1
-
+            IoU_max = jt.max(IoU , dim = 1)
+            IoU_argmax = jt.argmax(IoU , dim = 1)
+            
             # compute the loss for classification
-            targets = torch.ones(classification.shape) * -1
+            targets = jt.ones(classification.shape) * -1
 
-            if torch.cuda.is_available():
-                targets = targets.cuda()
+            targets[IoU_max < 0.4, :] = 0
 
-            targets[torch.lt(IoU_max, 0.4), :] = 0
-
-            positive_indices = torch.ge(IoU_max, 0.5)
+            positive_indices = IoU_max >= 0.5
 
             num_positive_anchors = positive_indices.sum()
 
@@ -83,26 +59,20 @@ class FocalLoss(nn.Module):
             targets[positive_indices, :] = 0
             targets[positive_indices, assigned_annotations[positive_indices, 4].long()] = 1
 
-            if torch.cuda.is_available():
-                alpha_factor = torch.ones(targets.shape).cuda() * alpha
-            else:
-                alpha_factor = torch.ones(targets.shape) * alpha
+            alpha_factor = jt.ones(targets.shape) * alpha
 
-            alpha_factor = torch.where(torch.eq(targets, 1.), alpha_factor, 1. - alpha_factor)
-            focal_weight = torch.where(torch.eq(targets, 1.), 1. - classification, classification)
-            focal_weight = alpha_factor * torch.pow(focal_weight, gamma)
+            alpha_factor = jt.where(targets == 1., alpha_factor, 1. - alpha_factor)
+            focal_weight = jt.where(targets == 1., 1. - classification, classification)
+            focal_weight = alpha_factor * jt.pow(focal_weight, gamma)
 
-            bce = -(targets * torch.log(classification) + (1.0 - targets) * torch.log(1.0 - classification))
+            bce = -(targets * jt.log(classification) + (1.0 - targets) * jt.log(1.0 - classification))
 
             # cls_loss = focal_weight * torch.pow(bce, gamma)
             cls_loss = focal_weight * bce
 
-            if torch.cuda.is_available():
-                cls_loss = torch.where(torch.ne(targets, -1.0), cls_loss, torch.zeros(cls_loss.shape).cuda())
-            else:
-                cls_loss = torch.where(torch.ne(targets, -1.0), cls_loss, torch.zeros(cls_loss.shape))
+            cls_loss = jt.where(targets != -1.0, cls_loss, jt.zeros(cls_loss.shape))
 
-            classification_losses.append(cls_loss.sum()/torch.clamp(num_positive_anchors.float(), min=1.0))
+            classification_losses.append(cls_loss.sum()/jt.clamp(num_positive_anchors.float(), min_v=1.0))
 
             # compute the loss for regression
 
@@ -120,55 +90,98 @@ class FocalLoss(nn.Module):
                 gt_ctr_y   = assigned_annotations[:, 1] + 0.5 * gt_heights
 
                 # clip widths to 1
-                gt_widths  = torch.clamp(gt_widths, min=1)
-                gt_heights = torch.clamp(gt_heights, min=1)
+                gt_widths  = jt.clamp(gt_widths, min_v=1)
+                gt_heights = jt.clamp(gt_heights, min_v=1)
 
                 targets_dx = (gt_ctr_x - anchor_ctr_x_pi) / anchor_widths_pi
                 targets_dy = (gt_ctr_y - anchor_ctr_y_pi) / anchor_heights_pi
-                targets_dw = torch.log(gt_widths / anchor_widths_pi)
-                targets_dh = torch.log(gt_heights / anchor_heights_pi)
+                targets_dw = jt.log(gt_widths / anchor_widths_pi)
+                targets_dh = jt.log(gt_heights / anchor_heights_pi)
 
-                targets = torch.stack((targets_dx, targets_dy, targets_dw, targets_dh))
-                targets = targets.t()
+                targets = jt.stack((targets_dx, targets_dy, targets_dw, targets_dh))
+                targets = jt.transpose(targets)
 
-                if torch.cuda.is_available():
-                    targets = targets/torch.Tensor([[0.1, 0.1, 0.2, 0.2]]).cuda()
-                else:
-                    targets = targets/torch.Tensor([[0.1, 0.1, 0.2, 0.2]])
+                targets = targets / jt.array([[0.1, 0.1, 0.2, 0.2]])
 
-                negative_indices = 1 + (~positive_indices)
-
-                regression_diff = torch.abs(targets - regression[positive_indices, :])
+                regression_diff = jt.abs(targets - regression[positive_indices, :])
                 # smooth l1 loss
-                regression_loss = torch.where(torch.le(regression_diff, 1.0 / 9.0),
-                                              0.5 * 9.0 * torch.pow(regression_diff, 2),
+                regression_loss = jt.where(   regression_diff <= 1.0 / 9.0,
+                                              0.5 * 9.0 * jt.pow(regression_diff, 2),
                                               regression_diff - 0.5 / 9.0)
                 regression_losses.append(regression_loss.mean())
             else:
-                if torch.cuda.is_available():
-                    regression_losses.append(torch.tensor(0).float().cuda())
-                else:
-                    regression_losses.append(torch.tensor(0).float())
+                regression_losses.append(jt.array(0.0))
 
-        return torch.stack(classification_losses).mean(dim=0, keepdim=True), \
-               torch.stack(regression_losses).mean(dim=0, keepdim=True)
+        return jt.stack(classification_losses).mean(dim=0, keepdim=True), \
+               jt.stack(regression_losses).mean(dim=0, keepdim=True)
 
 
 def calc_iou(a, b):
     area = (b[:, 2] - b[:, 0]) * (b[:, 3] - b[:, 1])
 
-    iw = torch.min(torch.unsqueeze(a[:, 2], dim=1), b[:, 2]) - torch.max(torch.unsqueeze(a[:, 0], 1), b[:, 0])
-    ih = torch.min(torch.unsqueeze(a[:, 3], dim=1), b[:, 3]) - torch.max(torch.unsqueeze(a[:, 1], 1), b[:, 1])
+    iw = jt.minimum(jt.unsqueeze(a[:, 2], dim=1), b[:, 2]) - jt.maximum(jt.unsqueeze(a[:, 0], 1), b[:, 0])
+    ih = jt.minimum(jt.unsqueeze(a[:, 3], dim=1), b[:, 3]) - jt.maximum(jt.unsqueeze(a[:, 1], 1), b[:, 1])
 
-    iw = torch.clamp(iw, min=0)
-    ih = torch.clamp(ih, min=0)
+    iw = jt.clamp(iw, min_v=0)
+    ih = jt.clamp(ih, min_v=0)
 
-    ua = torch.unsqueeze((a[:, 2] - a[:, 0]) * (a[:, 3] - a[:, 1]), dim=1) + area - iw * ih
+    ua = jt.unsqueeze((a[:, 2] - a[:, 0]) * (a[:, 3] - a[:, 1]), dim=1) + area - iw * ih
 
-    ua = torch.clamp(ua, min=1e-8)
+    ua = jt.clamp(ua, min_v=1e-8)
 
     intersection = iw * ih
 
     IoU = intersection / ua
 
     return IoU
+
+
+def test_focal_loss():
+    import numpy as np
+    jt.flags.use_cuda = False  # 若有 GPU 且想用 GPU，则设为 True
+
+    # 参数设置
+    batch_size       = 2
+    num_anchors      = 5
+    num_classes      = 3
+    max_annotations  = 4
+
+    # 随机生成“网络”输出
+    # classifications: [B, A, C]，值在 (0,1) 之间
+    classifications = jt.random([batch_size, num_anchors, num_classes])
+    # regressions: [B, A, 4]，位置回归输出
+    regressions     = jt.random([batch_size, num_anchors, 4])
+
+    # 构造 anchors: [1, A, 4]，格式 [x1,y1,x2,y2]
+    # 这里简单取均匀分布在 [0, 10] 上的坐标，并确保 x2 > x1, y2 > y1
+    raw = jt.random([num_anchors, 4]) * 10
+    x1 = jt.minimum(raw[:,0], raw[:,2])
+    y1 = jt.minimum(raw[:,1], raw[:,3])
+    x2 = jt.maximum(raw[:,0], raw[:,2])
+    y2 = jt.maximum(raw[:,1], raw[:,3])
+    anchors = jt.stack([x1, y1, x2, y2], dim=1).unsqueeze(0)
+
+    # 构造 annotations: [B, M, 5]，最后一维 [x1,y1,x2,y2, class_id]
+    annotations = jt.full([batch_size, max_annotations, 5], -1.0)
+    for b in range(batch_size):
+        # 随机给每张图生成 1 ~ max_annotations 个真值框
+        n = np.random.randint(1, max_annotations+1)
+        raw_gt = jt.random([n, 4]) * 10
+        gx1 = jt.minimum(raw_gt[:,0], raw_gt[:,2])
+        gy1 = jt.minimum(raw_gt[:,1], raw_gt[:,3])
+        gx2 = jt.maximum(raw_gt[:,0], raw_gt[:,2])
+        gy2 = jt.maximum(raw_gt[:,1], raw_gt[:,3])
+        cls = jt.randint(0, num_classes, shape=[n,1]).float()
+        gt = jt.concat([gx1.unsqueeze(1), gy1.unsqueeze(1),
+                        gx2.unsqueeze(1), gy2.unsqueeze(1), cls], dim=1)
+        annotations[b, :n, :] = gt
+
+    # 实例化并运行 FocalLoss
+    loss_fn = FocalLoss()
+    cls_loss, reg_loss = loss_fn(classifications, regressions, anchors, annotations)
+
+    print(f"分类损失 (cls_loss): {cls_loss.item():.6f}")
+    print(f"回归损失 (reg_loss): {reg_loss.item():.6f}")
+
+if __name__ == "__main__":
+    test_focal_loss()

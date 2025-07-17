@@ -1,6 +1,4 @@
 import numpy as np
-# import torch
-# import torch.nn as nn
 import jittor as jt
 import jittor.nn as nn 
 
@@ -20,11 +18,11 @@ class Anchors(nn.Module):
         if scales is None:   # scale = [1, 1.26, 1.587]
             self.scales = np.array([2 ** 0, 2 ** (1.0 / 3.0), 2 ** (2.0 / 3.0)])
 
-    def forward(self, image):
+    def execute(self, image):
 
         image_shape = image.shape[2:]
         image_shape = np.array(image_shape)
-        image_shapes = [(image_shape + 2 ** x - 1) // (2 ** x) for x in self.pyramid_levels]
+        image_shapes = [(image_shape + 2 ** x - 1) // (2 ** x) for x in self.pyramid_levels] 
 
         # compute anchors over all pyramid levels
         all_anchors = np.zeros((0, 4)).astype(np.float32)
@@ -36,10 +34,12 @@ class Anchors(nn.Module):
 
         all_anchors = np.expand_dims(all_anchors, axis=0)
 
-        if torch.cuda.is_available():
-            return torch.from_numpy(all_anchors.astype(np.float32)).cuda()
-        else:
-            return torch.from_numpy(all_anchors.astype(np.float32))
+        # if torch.cuda.is_available():
+        #     return torch.from_numpy(all_anchors.astype(np.float32)).cuda()
+        # else:
+        #     return torch.from_numpy(all_anchors.astype(np.float32))
+        jt_anc = jt.array(all_anchors)
+        return jt_anc
 
 
 def generate_anchors(base_size=16, ratios=None, scales=None):

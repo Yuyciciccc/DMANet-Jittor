@@ -5,12 +5,11 @@ smooth l1 loss { = 0.5x2    if |x| < 1
 
 In this file, we define loss as follows:
 beta = 0.11
-smooth l1 loss = 1/(2*beta) * x2   if |x| < beta
+smooth l1 loss = 1/(2*beta) * x^2   if |x| < beta
                = |x|-beta/2        otherwise
 """
-from torch.autograd import Variable
-import torch
-import torch.nn as nn
+import jittor as jt
+import jittor.nn as nn
 
 
 class Smooth_L1_Loss(nn.Module):
@@ -19,23 +18,30 @@ class Smooth_L1_Loss(nn.Module):
         self.beta = beta
         self.reduction = reduction
 
-    def forward(self, inputs, targets):
-        targets = Variable(targets, requires_grad=False)
-        flag = torch.abs(inputs - targets)
+    def execute(self, inputs, targets):
+        # targets = Variable(targets, requires_grad=False)
 
-        loss = torch.where(flag.float() < self.beta, 0.5/self.beta*flag.float()**2, flag.float()-0.5*self.beta)
+        flag = jt.abs(inputs - targets)
+
+        loss = jt.where(flag.float() < self.beta, 0.5/self.beta*flag.float()**2, flag.float()-0.5*self.beta)
 
         if self.reduction == "mean":
-            loss = torch.mean(loss)
+            loss = jt.mean(loss)
         else:
-            loss = torch.sum(loss)
+            loss = jt.sum(loss)
 
         return loss
 
 
 if __name__ == "__main__":
     loss_function = Smooth_L1_Loss(beta=0.11, reduction="mean")
-    inputs = torch.rand(8, 16)
-    targets = torch.rand(8, 16)
+    inputs = jt.rand(8, 16)
+    targets = jt.rand(8, 16)
     loss = loss_function(inputs=inputs, targets=targets)
     print(loss)
+    # Backward pass
+    loss.backward()
+    # Check gradients
+    print("Gradient w.r.t. inputs:\n", inputs.grad)
+    print("Gradient w.r.t. targets (should be None or zero if detached):\n", targets.grad)
+

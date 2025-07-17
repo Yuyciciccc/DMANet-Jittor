@@ -1,5 +1,5 @@
-import torch
-import torch.nn as nn
+import jittor as jt
+import jittor.nn as nn
 from models.modules.embed_aggregator import EmbedAggregator
 
 
@@ -19,7 +19,7 @@ class ConvLSTM(nn.Module):
         self.embed_layer = EmbedAggregator(channels=hidden_size)
         self.Gates = nn.Conv2d(input_size + hidden_size, 4*hidden_size, kernel_size, padding=pad)
 
-    def forward(self, input_, prev_state=None):
+    def execute(self, input_, prev_state=None):
         flag = prev_state
         # get batch and spatial sizes
         batch_size = input_.data.size()[0]
@@ -33,9 +33,9 @@ class ConvLSTM(nn.Module):
             if state_size not in self.zero_tensors:
                 # allocate a tensor with size `spatial_size`, filled with zero (if it has not been allocated already)
                 self.zero_tensors[state_size] = (
-                    torch.zeros(state_size).to(input_.device),
-                    torch.zeros(state_size).to(input_.device),
-                    torch.zeros(state_size).to(input_.device)
+                    jt.zeros(state_size),
+                    jt.zeros(state_size),
+                    jt.zeros(state_size)
                 )
 
             prev_state = self.zero_tensors[tuple(state_size)]
@@ -49,27 +49,27 @@ class ConvLSTM(nn.Module):
 
                 weight = self.embed_layer(input_[idx].unsqueeze(0), prev_feature[idx].unsqueeze(0))
                 weights.append(weight)
-            weights = torch.cat([w for w in weights])
+            weights = jt.cat([w for w in weights])
             fusion_hidden = prev_hidden * weights
             prev_cell = prev_cell * weights
 
         # data size is [batch, channel, height, width]
-        stacked_inputs = torch.cat((input_, fusion_hidden), 1)
+        stacked_inputs = jt.cat((input_, fusion_hidden), 1)
         gates = self.Gates(stacked_inputs)
 
         # chunk across channel dimension
         in_gate, remember_gate, out_gate, cell_gate = gates.chunk(4, 1)
 
         # apply sigmoid non linearity
-        in_gate = torch.sigmoid(in_gate)
-        remember_gate = torch.sigmoid(remember_gate)
-        out_gate = torch.sigmoid(out_gate)
+        in_gate = jt.sigmoid_(in_gate)
+        remember_gate = jt.sigmoid_(remember_gate)
+        out_gate = jt.sigmoid_(out_gate)
 
         # apply tanh non linearity
-        cell_gate = torch.tanh(cell_gate)
+        cell_gate = jt.tanh(cell_gate)
 
         # compute current cell and hidden state
         cell = (remember_gate * prev_cell) + (in_gate * cell_gate)
-        hidden = out_gate * torch.tanh(cell)
+        hidden = out_gate * jt.tanh(cell)
 
         return hidden, cell, input_

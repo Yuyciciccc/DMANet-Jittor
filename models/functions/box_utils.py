@@ -1,5 +1,5 @@
-import torch.nn as nn
-import torch
+import jittor as jt
+import jittor.nn as nn
 import numpy as np
 
 
@@ -13,21 +13,15 @@ class BBoxTransform(nn.Module):
     def __init__(self, mean=None, std=None):
         super(BBoxTransform, self).__init__()
         if mean is None:
-            if torch.cuda.is_available():
-                self.mean = torch.from_numpy(np.array([0, 0, 0, 0]).astype(np.float32)).cuda()
-            else:
-                self.mean = torch.from_numpy(np.array([0, 0, 0, 0]).astype(np.float32))
+            self.mean = jt.array(np.array([0, 0, 0, 0]).astype(np.float32))
         else:
             self.mean = mean
         if std is None:
-            if torch.cuda.is_available():
-                self.std = torch.from_numpy(np.array([0.1, 0.1, 0.2, 0.2]).astype(np.float32)).cuda()
-            else:
-                self.std = torch.from_numpy(np.array([0.1, 0.1, 0.2, 0.2]).astype(np.float32))
+            self.std = jt.array(np.array([0.1, 0.1, 0.2, 0.2]).astype(np.float32))
         else:
             self.std = std
 
-    def forward(self, boxes, deltas):
+    def execute(self, boxes, deltas):
 
         widths = boxes[:, :, 2] - boxes[:, :, 0]
         heights = boxes[:, :, 3] - boxes[:, :, 1]
@@ -41,15 +35,15 @@ class BBoxTransform(nn.Module):
 
         pred_ctr_x = ctr_x + dx * widths
         pred_ctr_y = ctr_y + dy * heights
-        pred_w = torch.exp(dw) * widths
-        pred_h = torch.exp(dh) * heights
+        pred_w = jt.exp(dw) * widths
+        pred_h = jt.exp(dh) * heights
 
         pred_boxes_x1 = pred_ctr_x - 0.5 * pred_w
         pred_boxes_y1 = pred_ctr_y - 0.5 * pred_h
         pred_boxes_x2 = pred_ctr_x + 0.5 * pred_w
         pred_boxes_y2 = pred_ctr_y + 0.5 * pred_h
 
-        pred_boxes = torch.stack([pred_boxes_x1, pred_boxes_y1, pred_boxes_x2, pred_boxes_y2], dim=2)
+        pred_boxes = jt.stack([pred_boxes_x1, pred_boxes_y1, pred_boxes_x2, pred_boxes_y2], dim=2)
 
         return pred_boxes
 
@@ -59,14 +53,14 @@ class ClipBoxes(nn.Module):
     def __init__(self, width=None, height=None):
         super(ClipBoxes, self).__init__()
 
-    def forward(self, boxes, img):
+    def execute(self, boxes, img):
         batch_size, num_channels, height, width = img.shape
 
-        boxes[:, :, 0] = torch.clamp(boxes[:, :, 0], min=0)
-        boxes[:, :, 1] = torch.clamp(boxes[:, :, 1], min=0)
+        boxes[:, :, 0] = jt.clamp(boxes[:, :, 0], min_v=0)
+        boxes[:, :, 1] = jt.clamp(boxes[:, :, 1], min_v=0)
 
-        boxes[:, :, 2] = torch.clamp(boxes[:, :, 2], max=width)
-        boxes[:, :, 3] = torch.clamp(boxes[:, :, 3], max=height)
+        boxes[:, :, 2] = jt.clamp(boxes[:, :, 2], max_v=width)
+        boxes[:, :, 3] = jt.clamp(boxes[:, :, 3], max_v=height)
 
         return boxes
 
@@ -92,5 +86,10 @@ def box_iou(box1, box2):
     area2 = box_area(box2.T)
 
     # inter(N,M) = (rb(N,M,2) - lt(N,M,2)).clamp(0).prod(2)
-    inter = (torch.min(box1[:, None, 2:], box2[:, 2:]) - torch.max(box1[:, None, :2], box2[:, :2])).clamp(0).prod(2)
+    lt = jt.maximum(box1[:, None, :2], box2[:, :2])   # left-top: max(x1, y1)
+    rb = jt.minimum(box1[:, None, 2:], box2[:, 2:])   # right-bottom: min(x2, y2)
+
+    wh = jt.clamp(rb - lt, min_v=0)   # width-height of intersection
+    inter = wh.prod(dim=2)            # intersection area
+
     return inter / (area1[:, None] + area2 - inter)  # iou = inter / (area1 + area2 - inter)

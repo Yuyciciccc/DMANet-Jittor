@@ -1,5 +1,5 @@
-import torch
-import torch.nn as nn
+import jittor as jt
+import jittor.nn as nn
 # from apex import amp
 
 
@@ -36,7 +36,7 @@ class NonLocalAggregationModule(nn.Module):
         self.init_weights()
 
     # @amp.float_function
-    def forward(self, curr_x, adja_x):
+    def execute(self, curr_x, adja_x):
         """
         :param curr_x: current frame (HxWxC)
         :param adja_x: adjacent frames (NxHxWxC)
@@ -51,13 +51,13 @@ class NonLocalAggregationModule(nn.Module):
 
         phi_x = self.phi(adja_x)
         phi_x = self.phi_max(phi_x).view(n, self.inter_channels, -1)  # N x C x HW
-        pairwise_weight = torch.matmul(theta_x.type(torch.float32), phi_x.type(torch.float32))  # N x HW x HW
+        pairwise_weight = jt.matmul(theta_x.type(jt.float32), phi_x.type(jt.float32))  # N x HW x HW
 
         # pairwise_weight /= theta_x.shape[-1]
         pairwise_weight /= theta_x.shape[-1] ** 0.5
         pairwise_weight = pairwise_weight.softmax(dim=-1)
 
-        y = torch.matmul(pairwise_weight, g_x.type(torch.float32))  # N x HW x C
+        y = jt.matmul(pairwise_weight, g_x.type(jt.float32))  # N x HW x C
         y = y.permute(0, 2, 1).contiguous().reshape(n, self.inter_channels, h, w)  # must contiguous
         att_x = self.att_layer(y)
         x = curr_x + att_x

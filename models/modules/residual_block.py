@@ -1,5 +1,5 @@
-import torch
-import torch.nn as nn
+import jittor as jt
+import jittor.nn as nn
 import numpy as np
 
 
@@ -16,13 +16,13 @@ class BasicBlock(nn.Module):
         super(BasicBlock, self).__init__()
         self.conv1 = conv3x3(inplanes, planes, stride)
         self.bn1 = nn.BatchNorm2d(planes)
-        self.relu = nn.ReLU(inplace=True)
+        self.relu = nn.relu()
         self.conv2 = conv3x3(planes, planes)
         self.bn2 = nn.BatchNorm2d(planes)
         self.downsample = downsample
         self.stride = stride
 
-    def forward(self, x):
+    def execute(self, x):
         residual = x
 
         out = self.conv1(x)
@@ -53,11 +53,11 @@ class Bottleneck(nn.Module):
         self.bn2 = nn.BatchNorm2d(planes)
         self.conv3 = nn.Conv2d(planes, planes * 4, kernel_size=1, bias=False)
         self.bn3 = nn.BatchNorm2d(planes * 4)
-        self.relu = nn.ReLU(inplace=True)
+        self.relu = nn.relu()
         self.downsample = downsample
         self.stride = stride
 
-    def forward(self, x):
+    def execute(self, x):
         residual = x
 
         out = self.conv1(x)
@@ -85,22 +85,16 @@ class BBoxTransform(nn.Module):
     def __init__(self, mean=None, std=None):
         super(BBoxTransform, self).__init__()
         if mean is None:
-            if torch.cuda.is_available():
-                self.mean = torch.from_numpy(np.array([0, 0, 0, 0]).astype(np.float32)).cuda()
-            else:
-                self.mean = torch.from_numpy(np.array([0, 0, 0, 0]).astype(np.float32))
-
+            self.mean = jt.array([0, 0, 0, 0], dtype=jt.float32)
         else:
             self.mean = mean
+
         if std is None:
-            if torch.cuda.is_available():
-                self.std = torch.from_numpy(np.array([0.1, 0.1, 0.2, 0.2]).astype(np.float32)).cuda()
-            else:
-                self.std = torch.from_numpy(np.array([0.1, 0.1, 0.2, 0.2]).astype(np.float32))
+            self.std = jt.array([0.1, 0.1, 0.2, 0.2], dtype=jt.float32)
         else:
             self.std = std
 
-    def forward(self, boxes, deltas):
+    def execute(self, boxes, deltas):
 
         widths = boxes[:, :, 2] - boxes[:, :, 0]
         heights = boxes[:, :, 3] - boxes[:, :, 1]
@@ -114,15 +108,15 @@ class BBoxTransform(nn.Module):
 
         pred_ctr_x = ctr_x + dx * widths
         pred_ctr_y = ctr_y + dy * heights
-        pred_w = torch.exp(dw) * widths
-        pred_h = torch.exp(dh) * heights
+        pred_w = jt.exp(dw) * widths
+        pred_h = jt.exp(dh) * heights
 
         pred_boxes_x1 = pred_ctr_x - 0.5 * pred_w
         pred_boxes_y1 = pred_ctr_y - 0.5 * pred_h
         pred_boxes_x2 = pred_ctr_x + 0.5 * pred_w
         pred_boxes_y2 = pred_ctr_y + 0.5 * pred_h
 
-        pred_boxes = torch.stack([pred_boxes_x1, pred_boxes_y1, pred_boxes_x2, pred_boxes_y2], dim=2)
+        pred_boxes = jt.stack([pred_boxes_x1, pred_boxes_y1, pred_boxes_x2, pred_boxes_y2], dim=2)
 
         return pred_boxes
 
@@ -132,13 +126,13 @@ class ClipBoxes(nn.Module):
     def __init__(self, width=None, height=None):
         super(ClipBoxes, self).__init__()
 
-    def forward(self, boxes, img):
+    def execute(self, boxes, img):
         batch_size, num_channels, height, width = img.shape
 
-        boxes[:, :, 0] = torch.clamp(boxes[:, :, 0], min=0)
-        boxes[:, :, 1] = torch.clamp(boxes[:, :, 1], min=0)
+        boxes[:, :, 0] = jt.clamp(boxes[:, :, 0], min_v=0)
+        boxes[:, :, 1] = jt.clamp(boxes[:, :, 1], min_v=0)
 
-        boxes[:, :, 2] = torch.clamp(boxes[:, :, 2], max=width)
-        boxes[:, :, 3] = torch.clamp(boxes[:, :, 3], max=height)
+        boxes[:, :, 2] = jt.clamp(boxes[:, :, 2], max_v=width)
+        boxes[:, :, 3] = jt.clamp(boxes[:, :, 3], max_v=height)
 
         return boxes

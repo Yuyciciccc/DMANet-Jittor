@@ -1,7 +1,6 @@
-import torch.nn as nn
-import torch
+import jittor as jt
+import jittor.nn as nn
 import math
-import torch.utils.model_zoo as model_zoo
 from models.modules.residual_block import Bottleneck, BasicBlock
 from models.modules.pyramid_network import FeaturesPyramidNetwork
 from models.functions.anchors import Anchors
@@ -107,9 +106,9 @@ class DMANet(nn.Module):
             neg_spatial_features = self.middle_feature_extractor(neg_voxel_features, neg_coors.type(dtype=torch.int32))
             pos_spatial_feature_list.append(pos_spatial_features), neg_spatial_feature_list.append(neg_spatial_features)
 
-        pos_spatial_feature = torch.cat([pos for pos in pos_spatial_feature_list], dim=0)
-        neg_spatial_feature = torch.cat([neg for neg in neg_spatial_feature_list], dim=0)
-        spatial_feature = torch.cat([pos_spatial_feature, neg_spatial_feature], dim=1)
+        pos_spatial_feature = jt.cat([pos for pos in pos_spatial_feature_list], dim=0)
+        neg_spatial_feature = jt.cat([neg for neg in neg_spatial_feature_list], dim=0)
+        spatial_feature = jt.cat([pos_spatial_feature, neg_spatial_feature], dim=1)
 
         x = self.input_layer(spatial_feature)
         x1 = self.layer1(x)  # 128
@@ -142,7 +141,7 @@ class DMANet(nn.Module):
                     prev_f = prev[idy].unsqueeze(0)
                     agg_feat = self.aggregation_layer[idx](curr_f, prev_f)
                     batch_list.append(agg_feat)
-                batch_agg_feat = torch.cat([b for b in batch_list], dim=0)
+                batch_agg_feat = jt.cat([b for b in batch_list], dim=0)
                 agg_features.append(batch_agg_feat)
 
         # [64, 32, 16, 8, 4]
@@ -159,8 +158,8 @@ class DMANet(nn.Module):
 
         temporal_feature = [temporal_feature2, temporal_feature3, temporal_feature4, temporal_feature5, temporal_feature6]
 
-        regression = torch.cat([self.regressionModel(s+l+t) for s, l, t in zip(short_features, long_features, temporal_feature)], dim=1)
-        classification = torch.cat([self.classificationModel(s+l+t) for s, l, t in zip(short_features, long_features, temporal_feature)], dim=1)
+        regression = jt.cat([self.regressionModel(s+l+t) for s, l, t in zip(short_features, long_features, temporal_feature)], dim=1)
+        classification = jt.cat([self.classificationModel(s+l+t) for s, l, t in zip(short_features, long_features, temporal_feature)], dim=1)
         anchors = self.anchors(spatial_feature)
         return classification, regression, anchors, states, fpn_features, spatial_feature
 

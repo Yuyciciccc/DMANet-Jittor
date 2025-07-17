@@ -1,6 +1,5 @@
-import torch
-import torch.nn as nn
-
+import jittor as jt
+import jittor.nn as nn
 
 class EmbedAggregator(nn.Module):
     """
@@ -8,12 +7,12 @@ class EmbedAggregator(nn.Module):
     """
     def __init__(self, channels, kernel_size=3):
         super(EmbedAggregator, self).__init__()
-        self.embed_convs = nn.Sequential(nn.Conv2d(channels, channels, kernel_size, padding=(kernel_size-1)//2),
-                                         nn.ReLU(inplace=True),
-                                         nn.Conv2d(channels, channels, kernel_size, padding=(kernel_size-1)//2),
-                                         nn.ReLU(inplace=True))
+        self.embed_convs = nn.Sequential(nn.Conv(channels, channels, kernel_size, padding=(kernel_size-1)//2),
+                                         nn.relu(),
+                                         nn.Conv(channels, channels, kernel_size, padding=(kernel_size-1)//2),
+                                         nn.relu())
 
-    def forward(self, curr_x, prev_x):
+    def execute(self, curr_x, prev_x):
         """
         1.Compute the cos similarity between current feature map and previous feature map. e.g. Ft, Ft-1
         2.Use the normalized(softmax)cos similarity to weightedly hidden state
@@ -29,5 +28,14 @@ class EmbedAggregator(nn.Module):
         curr_embed = curr_embed / (curr_embed.norm(p=2, dim=1, keepdim=True) + 1e-6)  # L2
         prev_embed = prev_embed / (prev_embed.norm(p=2, dim=1, keepdim=True) + 1e-6)
 
-        weights = torch.sum(curr_embed*prev_embed, dim=1, keepdim=True)
+        weights = jt.sum(curr_embed*prev_embed, dim=1, keepdim=True)
         return weights
+
+# Example usage
+if __name__ == "__main__":
+    jt.flags.use_cuda = False
+    agg = EmbedAggregator(channels=64)
+    x1 = jt.randn([1,64,32,32])
+    x2 = jt.randn([1,64,32,32])
+    w = agg(x1, x2)
+    print(w.shape)  # should be [1,1,32,32]
