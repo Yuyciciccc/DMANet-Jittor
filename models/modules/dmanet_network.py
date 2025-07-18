@@ -1,6 +1,8 @@
+import sys
+sys.path.append(".")
+
 import jittor as jt
 import jittor.nn as nn
-import math
 from models.modules.residual_block import Bottleneck, BasicBlock
 from models.modules.pyramid_network import FeaturesPyramidNetwork
 from models.functions.anchors import Anchors
@@ -8,7 +10,7 @@ from models.functions.focal_loss import FocalLoss
 from models.modules.convlstm_fusion import ConvLSTM
 from models.modules.non_local_aggregation import NonLocalAggregationModule
 from models.modules.eventpillars import PillarFeatureNet, EventPillarsScatter
-
+from jittor.models import resnet
 
 class DMANet(nn.Module):
 
@@ -24,7 +26,7 @@ class DMANet(nn.Module):
 
         self.input_layer = nn.Sequential(nn.Conv2d(in_channels*2, 64, kernel_size=7, stride=2, padding=3, bias=False),
                                          nn.BatchNorm2d(64),
-                                         nn.ReLU(inplace=True),
+                                         nn.ReLU(),
                                          nn.MaxPool2d(kernel_size=3, stride=2, padding=1))
         self.layer1 = self._make_layer(block, 64, layers[0])
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
@@ -84,7 +86,7 @@ class DMANet(nn.Module):
             if isinstance(layer, nn.BatchNorm2d):
                 layer.eval()
 
-    def forward(self, inputs, prev_states, prev_features):
+    def execute(self, inputs, prev_states, prev_features):
         states = list()
         agg_features = list()
 
@@ -102,8 +104,8 @@ class DMANet(nn.Module):
             neg_voxel_features = neg_voxel_features.squeeze(dim=0).squeeze(dim=-1).permute(1, 0)
 
             # spatial_feature input size
-            pos_spatial_features = self.middle_feature_extractor(pos_voxel_features, pos_coors.type(dtype=torch.int32))
-            neg_spatial_features = self.middle_feature_extractor(neg_voxel_features, neg_coors.type(dtype=torch.int32))
+            pos_spatial_features = self.middle_feature_extractor(pos_voxel_features, pos_coors.int32())
+            neg_spatial_features = self.middle_feature_extractor(neg_voxel_features, neg_coors.int32())
             pos_spatial_feature_list.append(pos_spatial_features), neg_spatial_feature_list.append(neg_spatial_features)
 
         pos_spatial_feature = jt.cat([pos for pos in pos_spatial_feature_list], dim=0)
@@ -183,7 +185,7 @@ class RegressionModel(nn.Module):
 
         self.output = nn.Conv2d(feature_size, num_anchors * 4, kernel_size=3, padding=1)
 
-    def forward(self, x):
+    def execute(self, x):
         out = self.conv1(x)
         out = self.act1(out)
 
@@ -227,7 +229,7 @@ class ClassificationModel(nn.Module):
         self.output = nn.Conv2d(feature_size, num_anchors * num_classes, kernel_size=3, padding=1)
         self.output_act = nn.Sigmoid()
 
-    def forward(self, x):
+    def execute(self, x):
         out = self.conv1(x)
         out = self.act1(out)
 
@@ -253,6 +255,46 @@ class ClassificationModel(nn.Module):
         return out2.contiguous().view(x.shape[0], -1, self.num_classes)
 
 
+def load_pretrained_resnet_weights(model, resnet_model_name):
+    """
+    Load pretrained ResNet weights from Jittor models
+    Args:
+        model: DMANet model instance
+        resnet_model_name: name of the ResNet model (e.g., 'resnet18', 'resnet34', etc.)
+    """
+    try:
+        # 使用Jittor内置的ResNet模型
+        if resnet_model_name == 'resnet18':
+            pretrained_model = resnet.resnet18(pretrained=True)
+        elif resnet_model_name == 'resnet34':
+            pretrained_model = resnet.resnet34(pretrained=True)
+        elif resnet_model_name == 'resnet50':
+            pretrained_model = resnet.resnet50(pretrained=True)
+        elif resnet_model_name == 'resnet101':
+            pretrained_model = resnet.resnet101(pretrained=True)
+        elif resnet_model_name == 'resnet152':
+            pretrained_model = resnet.resnet152(pretrained=True)
+        else:
+            raise ValueError(f"Unsupported ResNet model: {resnet_model_name}")
+        
+        # 获取预训练模型的状态字典
+        pretrained_dict = pretrained_model.state_dict()
+        model_dict = model.state_dict()
+        
+        # 筛选出匹配的键值对
+        pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict and model_dict[k].shape == v.shape}
+        # 更新模型字典
+        model_dict.update(pretrained_dict)
+        # 加载更新后的状态字典
+        model.load_state_dict(model_dict)
+        
+        print(f"Successfully loaded pretrained weights from {resnet_model_name}")
+        
+    except Exception as e:
+        print(f"Warning: Could not load pretrained weights from {resnet_model_name}: {e}")
+        print("The model will be initialized with random weights.")
+
+
 def DMANet18(in_channels, num_classes, pretrained=False, **kwargs):
     """Constructs a ResNet-18 model.
     Args:
@@ -260,7 +302,7 @@ def DMANet18(in_channels, num_classes, pretrained=False, **kwargs):
     """
     model = DMANet(in_channels, num_classes, BasicBlock, [2, 2, 2, 2], **kwargs)
     if pretrained:
-        model.load_state_dict(model_zoo.load_url(model_urls['resnet18'], model_dir='.'), strict=False)
+        load_pretrained_resnet_weights(model, 'resnet18')
     return model
 
 
@@ -271,7 +313,7 @@ def DMANet34(in_channels, num_classes, pretrained=False, **kwargs):
     """
     model = DMANet(in_channels, num_classes, BasicBlock, [3, 4, 6, 3], **kwargs)
     if pretrained:
-        model.load_state_dict(model_zoo.load_url(model_urls['resnet34'], model_dir='.'), strict=False)
+        load_pretrained_resnet_weights(model, 'resnet34')
     return model
 
 
@@ -282,7 +324,7 @@ def DMANet50(in_channels, num_classes, pretrained=False, **kwargs):
     """
     model = DMANet(in_channels, num_classes, Bottleneck, [3, 4, 6, 3], **kwargs)
     if pretrained:
-        model.load_state_dict(model_zoo.load_url(model_urls['resnet50'], model_dir='.'), strict=False)
+        load_pretrained_resnet_weights(model, 'resnet50')
     return model
 
 
@@ -293,7 +335,7 @@ def DMANet101(in_channels, num_classes, pretrained=False, **kwargs):
     """
     model = DMANet(in_channels, num_classes, Bottleneck, [3, 4, 23, 3], **kwargs)
     if pretrained:
-        model.load_state_dict(model_zoo.load_url(model_urls['resnet101'], model_dir='.'), strict=False)
+        load_pretrained_resnet_weights(model, 'resnet101')
     return model
 
 
@@ -304,14 +346,7 @@ def DMANet152(in_channels, num_classes, pretrained=False, **kwargs):
     """
     model = DMANet(in_channels, num_classes, Bottleneck, [3, 8, 36, 3], **kwargs)
     if pretrained:
-        model.load_state_dict(model_zoo.load_url(model_urls['resnet152'], model_dir='.'), strict=False)
+        load_pretrained_resnet_weights(model, 'resnet152')
     return model
 
-# pretrained model
-model_urls = {
-    'resnet18': 'https://download.pytorch.org/models/resnet18-5c106cde.pth',
-    'resnet34': 'https://download.pytorch.org/models/resnet34-333f7ec4.pth',
-    'resnet50': 'https://download.pytorch.org/models/resnet50-19c8e357.pth',
-    'resnet101': 'https://download.pytorch.org/models/resnet101-5d3b4d8f.pth',
-    'resnet152': 'https://download.pytorch.org/models/resnet152-b121ed2d.pth',
-}
+

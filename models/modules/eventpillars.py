@@ -133,17 +133,16 @@ class EventPillarsScatter(nn.Module):
         # batch_canvas will be the final output.
         batch_canvas = []
 
-        canvas = jt.zeros(self.nchannels, self.nx * self.ny, dtype=voxel_features.dtype,
-                             device=voxel_features.device)
+        canvas = jt.zeros(self.nchannels, self.nx * self.ny, dtype=voxel_features.dtype)
         indices = coords[:, 1] * self.nx + coords[:, 2]
-        indices = indices.type(jt.float64)
+        indices = indices.astype(jt.float64)
         transposed_voxel_features = voxel_features.t()
         # Now scatter the blob back to the canvas.
         indices_2d = indices.view(1, -1)
-        ones = jt.ones([self.nchannels, 1], dtype=jt.float64, device=voxel_features.device)
+        ones = jt.ones([self.nchannels, 1], dtype=jt.float64)
         # indices_num_channel = torch.mm(ones, indices_2d)
         indices_num_channel = ones * indices_2d
-        indices_num_channel = indices_num_channel.type(jt.int64)
+        indices_num_channel = indices_num_channel.astype(jt.int64)
         scattered_canvas = canvas.scatter_(1, indices_num_channel, transposed_voxel_features)
 
         # Append to a list for later stacking.

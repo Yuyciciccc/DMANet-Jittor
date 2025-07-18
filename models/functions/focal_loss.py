@@ -3,137 +3,135 @@ import jittor.nn as nn
 
 
 class FocalLoss(nn.Module):
-    #def __init__(self):
-
     def execute(self, classifications, regressions, anchors, annotations):
         alpha = 0.25
         gamma = 2.0
         batch_size = classifications.shape[0]
+        num_anchors = classifications.shape[1]
+        num_classes = classifications.shape[2]
+
         classification_losses = []
         regression_losses = []
 
-        anchor = anchors[0, :, :]
-
+        anchor = anchors[0]  # [A,4]
         anchor_widths  = anchor[:, 2] - anchor[:, 0]
         anchor_heights = anchor[:, 3] - anchor[:, 1]
         anchor_ctr_x   = anchor[:, 0] + 0.5 * anchor_widths
         anchor_ctr_y   = anchor[:, 1] + 0.5 * anchor_heights
 
-        for j in range(batch_size):
-
-            classification = classifications[j, :, :]
-            regression = regressions[j, :, :]
-
-            bbox_annotation = annotations[j, :, :]
+        for b in range(batch_size):
+            classification = jt.clamp(classifications[b], 1e-4, 1.0 - 1e-4)  # [A,C]
+            regression     = regressions[b]                                  # [A,4]
+            bbox_annotation = annotations[b]
             bbox_annotation = bbox_annotation[bbox_annotation[:, 4] != -1]
 
-            classification = jt.clamp(classification, 1e-4, 1.0 - 1e-4)
-
-            if bbox_annotation.shape[0] == 0:
-                alpha_factor = jt.ones(classification.shape) * alpha
-                alpha_factor = 1. - alpha_factor
-                focal_weight = classification
-                focal_weight = alpha_factor * jt.pow(focal_weight, gamma)
-                bce = -(jt.log(1.0 - classification))
-                cls_loss = focal_weight * bce
-                classification_losses.append(cls_loss.sum())
-                regression_losses.append(jt.array(0).float())
+            if bbox_annotation.numel() == 0:
+                alpha_factor = (1 - alpha) * jt.ones_like(classification)
+                focal_weight = alpha_factor * jt.pow(classification, gamma)
+                bce = -jt.log(1.0 - classification)
+                classification_losses.append((focal_weight * bce).sum())
+                regression_losses.append(jt.zeros(1))
                 continue
 
-            IoU = calc_iou(anchors[0, :, :], bbox_annotation[:, :4])  # num_anchors x num_annotations
+            IoU = calc_iou(anchor, bbox_annotation[:, :4])   # [A, M]
+            IoU_max = jt.max(IoU, dim=1)                     # [A]
+            IoU_argmax = jt.argmax(IoU, dim=1)               # [A]
 
-            IoU_max = jt.max(IoU , dim = 1)
-            IoU_argmax = jt.argmax(IoU , dim = 1)
-            
-            # compute the loss for classification
-            targets = jt.ones(classification.shape) * -1
+            targets = jt.full(classification.shape, -1.0)    # [A,C]
 
-            targets[IoU_max < 0.4, :] = 0
+            # —— 用 index_select 替换原来的布尔切片 —— #
 
-            positive_indices = IoU_max >= 0.5
+            # Negatives: IoU < 0.4 → 0
+            neg_mask = IoU_max < 0.4
+            neg_rows = jt.index_select(jt.arange(num_anchors), 0, neg_mask.nonzero()[0])
+            targets[neg_rows, :] = 0
 
-            num_positive_anchors = positive_indices.sum()
+            # Positives: IoU ≥ 0.5 → one‑hot
+            pos_mask = IoU_max >= 0.5
+            assigned_annotations = bbox_annotation[IoU_argmax]    # [A,5]
+            pos_rows = jt.index_select(jt.arange(num_anchors), 0, pos_mask.nonzero()[0])
+            # 1) 清零正样本行
+            targets[pos_rows, :] = 0
+            # 2) 扁平索引打 one‑hot
+            sel_rows = jt.index_select(assigned_annotations, 0, pos_rows)  # [P,5]
+            cls_idx = jt.index_select(sel_rows, 1, jt.array([4])).squeeze(1).int32()  # shape: [P]  # [P]
+            A = num_anchors
+            C = num_classes
+            flat_idx = pos_rows * C + cls_idx                             # [P]
+            targets_flat = targets.reshape([-1])                           # [A*C]
+            targets_flat[flat_idx] = 1
+            targets = targets_flat.reshape([A, C])
 
-            assigned_annotations = bbox_annotation[IoU_argmax, :]
 
-            targets[positive_indices, :] = 0
-            targets[positive_indices, assigned_annotations[positive_indices, 4].long()] = 1
+            num_pos = len(pos_rows)
 
-            alpha_factor = jt.ones(targets.shape) * alpha
-
-            alpha_factor = jt.where(targets == 1., alpha_factor, 1. - alpha_factor)
-            focal_weight = jt.where(targets == 1., 1. - classification, classification)
+            # classification loss
+            alpha_factor = jt.where(targets == 1, alpha, 1 - alpha)
+            focal_weight = jt.where(targets == 1, 1 - classification, classification)
             focal_weight = alpha_factor * jt.pow(focal_weight, gamma)
+            bce = -(targets * jt.log(classification) +
+                    (1 - targets) * jt.log(1 - classification))
+            cls_loss = jt.where(targets != -1,
+                                focal_weight * bce,
+                                jt.zeros_like(bce))
+            classification_losses.append(cls_loss.sum() /
+                                         jt.clamp(jt.array(num_pos), min_v=1.0))
 
-            bce = -(targets * jt.log(classification) + (1.0 - targets) * jt.log(1.0 - classification))
+            # regression loss
+            if num_pos > 0:
+                pos_assigned = sel_rows
+                aw = anchor_widths[pos_rows]
+                ah = anchor_heights[pos_rows]
+                acx = anchor_ctr_x[pos_rows]
+                acy = anchor_ctr_y[pos_rows]
 
-            # cls_loss = focal_weight * torch.pow(bce, gamma)
-            cls_loss = focal_weight * bce
+                x1 = jt.index_select(pos_assigned, 1, jt.array([0])).squeeze(1)
+                y1 = jt.index_select(pos_assigned, 1, jt.array([1])).squeeze(1)
+                x2 = jt.index_select(pos_assigned, 1, jt.array([2])).squeeze(1)
+                y2 = jt.index_select(pos_assigned, 1, jt.array([3])).squeeze(1)
 
-            cls_loss = jt.where(targets != -1.0, cls_loss, jt.zeros(cls_loss.shape))
+                gw = x2 - x1
+                gh = y2 - y1
+                
+                x1 = jt.index_select(pos_assigned, 1, jt.array([0])).squeeze(1)
+                y1 = jt.index_select(pos_assigned, 1, jt.array([1])).squeeze(1)
 
-            classification_losses.append(cls_loss.sum()/jt.clamp(num_positive_anchors.float(), min_v=1.0))
+                gcx = x1 + 0.5 * gw
+                gcy = y1 + 0.5 * gh
+                gw = jt.clamp(gw, min_v=1)
+                gh = jt.clamp(gh, min_v=1)
 
-            # compute the loss for regression
+                dx = (gcx - acx) / aw
+                dy = (gcy - acy) / ah
+                dw = jt.log(gw / aw)
+                dh = jt.log(gh / ah)
 
-            if positive_indices.sum() > 0:
-                assigned_annotations = assigned_annotations[positive_indices, :]
-
-                anchor_widths_pi = anchor_widths[positive_indices]
-                anchor_heights_pi = anchor_heights[positive_indices]
-                anchor_ctr_x_pi = anchor_ctr_x[positive_indices]
-                anchor_ctr_y_pi = anchor_ctr_y[positive_indices]
-
-                gt_widths  = assigned_annotations[:, 2] - assigned_annotations[:, 0]
-                gt_heights = assigned_annotations[:, 3] - assigned_annotations[:, 1]
-                gt_ctr_x   = assigned_annotations[:, 0] + 0.5 * gt_widths
-                gt_ctr_y   = assigned_annotations[:, 1] + 0.5 * gt_heights
-
-                # clip widths to 1
-                gt_widths  = jt.clamp(gt_widths, min_v=1)
-                gt_heights = jt.clamp(gt_heights, min_v=1)
-
-                targets_dx = (gt_ctr_x - anchor_ctr_x_pi) / anchor_widths_pi
-                targets_dy = (gt_ctr_y - anchor_ctr_y_pi) / anchor_heights_pi
-                targets_dw = jt.log(gt_widths / anchor_widths_pi)
-                targets_dh = jt.log(gt_heights / anchor_heights_pi)
-
-                targets = jt.stack((targets_dx, targets_dy, targets_dw, targets_dh))
-                targets = jt.transpose(targets)
-
-                targets = targets / jt.array([[0.1, 0.1, 0.2, 0.2]])
-
-                regression_diff = jt.abs(targets - regression[positive_indices, :])
-                # smooth l1 loss
-                regression_loss = jt.where(   regression_diff <= 1.0 / 9.0,
-                                              0.5 * 9.0 * jt.pow(regression_diff, 2),
-                                              regression_diff - 0.5 / 9.0)
-                regression_losses.append(regression_loss.mean())
+                reg_targets = jt.stack([dx, dy, dw, dh],
+                                       dim=1) / jt.array([0.1, 0.1, 0.2, 0.2])
+                diff = jt.abs(reg_targets - regression[pos_rows])
+                reg_loss = jt.where(diff <= 1/9,
+                                    0.5 * 9 * diff * diff,
+                                    diff - 0.5/9)
+                regression_losses.append(reg_loss.mean())
             else:
-                regression_losses.append(jt.array(0.0))
+                regression_losses.append(jt.zeros(1))
 
-        return jt.stack(classification_losses).mean(dim=0, keepdim=True), \
-               jt.stack(regression_losses).mean(dim=0, keepdim=True)
+        return jt.stack(classification_losses).mean(), \
+               jt.stack(regression_losses).mean()
 
 
 def calc_iou(a, b):
-    area = (b[:, 2] - b[:, 0]) * (b[:, 3] - b[:, 1])
-
-    iw = jt.minimum(jt.unsqueeze(a[:, 2], dim=1), b[:, 2]) - jt.maximum(jt.unsqueeze(a[:, 0], 1), b[:, 0])
-    ih = jt.minimum(jt.unsqueeze(a[:, 3], dim=1), b[:, 3]) - jt.maximum(jt.unsqueeze(a[:, 1], 1), b[:, 1])
-
+    area_b = (b[:, 2] - b[:, 0]) * (b[:, 3] - b[:, 1])
+    iw = jt.minimum(jt.unsqueeze(a[:, 2], 1), b[:, 2]) - \
+         jt.maximum(jt.unsqueeze(a[:, 0], 1), b[:, 0])
+    ih = jt.minimum(jt.unsqueeze(a[:, 3], 1), b[:, 3]) - \
+         jt.maximum(jt.unsqueeze(a[:, 1], 1), b[:, 1])
     iw = jt.clamp(iw, min_v=0)
     ih = jt.clamp(ih, min_v=0)
-
-    ua = jt.unsqueeze((a[:, 2] - a[:, 0]) * (a[:, 3] - a[:, 1]), dim=1) + area - iw * ih
-
+    ua = (a[:, 2] - a[:, 0]) * (a[:, 3] - a[:, 1])
+    ua = jt.unsqueeze(ua, 1) + area_b - iw * ih
     ua = jt.clamp(ua, min_v=1e-8)
-
-    intersection = iw * ih
-
-    IoU = intersection / ua
-
-    return IoU
+    return iw * ih / ua
 
 
 def test_focal_loss():

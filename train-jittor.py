@@ -5,16 +5,15 @@ import argparse
 import os
 import abc
 import tqdm
-# import torch
+import jittor as jt
 import math
 import numpy as np
-# import torch.nn as nn
-# import torch.optim as optim
-# import torch.backends.cudnn as cudnn
-# from torch.utils.tensorboard import SummaryWriter
+import jittor.nn as nn
+import jittor.optim as optim
+from tensorboardX import SummaryWriter
 import warnings
 warnings.filterwarnings("ignore")
-from tensorboard import SummaryWriter
+
 import dataloader.dataset
 from models.functions.focal_loss import FocalLoss
 from models.functions.box_utils import box_iou
@@ -24,11 +23,10 @@ from dataloader.loader import Loader
 from models.functions.smooth_l1_loss import Smooth_L1_Loss
 from config.settings import Settings
 from utils.metrics import ap_per_class
-# from apex import amp
 from models.functions.warmup import WarmUpLR
-torch.multiprocessing.set_sharing_strategy('file_system')
 
-import jittor as jt
+# 设置Jittor使用GPU
+jt.flags.use_cuda = 1
 
 
 class AbstractTrainer(abc.ABC):
@@ -54,17 +52,12 @@ class AbstractTrainer(abc.ABC):
 
         self.buildModel()
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.settings.init_lr)
-        # mixed precision training
-        amp.register_float_function(torch, "sigmoid")
-        amp.register_float_function(torch, "softmax")
-        amp.register_float_function(torch, "matmul")
-        amp.register_float_function(torch.nn, "MaxPool2d")
-        self.model, self.optimizer = amp.initialize(self.model, self.optimizer, opt_level="O1")
 
+        # Jittor中的学习率调度器
         self.warmup_schedular = WarmUpLR(self.optimizer, len(self.train_loader)*self.settings.warm)
-        self.train_schedular = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer,
-                                                                          T_max=len(self.train_loader)*(self.settings.epoch-self.settings.warm),
-                                                                          eta_min=self.settings.init_lr*0.1)
+        self.train_schedular = jt.lr_scheduler.CosineAnnealingLR(self.optimizer,
+                                                                 T_max=len(self.train_loader)*(self.settings.epoch-self.settings.warm),
+                                                                 eta_min=self.settings.init_lr*0.1)
 
         self.batch_step = 0
         self.epoch_step = 0
@@ -79,13 +72,6 @@ class AbstractTrainer(abc.ABC):
 
         if settings.resume_training:
             self.loadCheckpoint(self.settings.resume_ckpt_file)
-
-        if settings.gpu_device != "cpu":
-            jt.flags.use_cuda = 1
-            jt.set_cuda_device(int(settings.gpu_device))
-
-
-
 
     @abc.abstractmethod
     def buildModel(self):
@@ -123,18 +109,20 @@ class AbstractTrainer(abc.ABC):
                                            num_bins=self.settings.num_bins)
         self.val_file_indexes = val_dataset.file_index()
         self.nr_val_epochs = val_dataset.nr_samples
+        # print(f"Length of train_dataset: {len(train_dataset)}")
 
-        self.train_sampler = torch.utils.data.sampler.SubsetRandomSampler(list(range(len(train_dataset))))
+        # Jittor中的数据采样器
+        self.train_sampler = jt.dataset.SubsetRandomSampler(train_dataset,(0 , len(train_dataset) - 1))
 
         self.train_loader = self.dataset_loader(train_dataset, mode="training",
                                                 batch_size=self.settings.batch_size,
-                                                num_workers=self.settings.num_cpu_workers, pin_memory=False,
+                                                num_workers=self.settings.num_cpu_workers,
                                                 drop_last=True, sampler=self.train_sampler,
                                                 data_index=self.train_file_indexes)
 
         self.val_loader = self.dataset_loader(val_dataset, mode="validation",
                                               batch_size=self.settings.batch_size // self.settings.batch_size,
-                                              num_workers=self.settings.num_cpu_workers, pin_memory=False,
+                                              num_workers=self.settings.num_cpu_workers,
                                               drop_last=True, sampler=None,
                                               data_index=self.val_file_indexes)
 
@@ -143,7 +131,11 @@ class AbstractTrainer(abc.ABC):
         loss_names = ["Confidence_Loss", "Location_Loss", "Overall_Loss"]
 
         for idx in range(len(loss_list)):
-            loss_value = loss_list[idx].data.cpu().numpy()
+            loss_value = loss_list[idx].data
+            if hasattr(loss_value, 'numpy'):
+                loss_value = loss_value.numpy()
+            elif hasattr(loss_value, 'item'):
+                loss_value = loss_value.item()
             self.writer.add_scalar("TrainingLoss/" + loss_names[idx], loss_value, self.batch_step)
 
     def storeClassmAP(self, map_list):
@@ -161,7 +153,7 @@ class AbstractTrainer(abc.ABC):
     def loadCheckpoint(self, filename):
         if os.path.isfile(filename):
             print("=> loading checkpoint '{}'".format(filename))
-            checkpoint = torch.load(filename)
+            checkpoint = jt.load(filename)
             self.epoch_step = checkpoint['epoch'] + 1
             self.model.load_state_dict(checkpoint["state_dict"])
             self.optimizer.load_state_dict(checkpoint["optimizer"])
@@ -172,8 +164,8 @@ class AbstractTrainer(abc.ABC):
 
     def saveCheckpoint(self):
         file_path = os.path.join(self.settings.ckpt_dir, "model_step_" + str(self.epoch_step) + ".pth")
-        torch.save({"state_dict": self.model.state_dict(), "optimizer": self.optimizer.state_dict(),
-                    "epoch": self.epoch_step}, file_path)
+        jt.save({"state_dict": self.model.state_dict(), "optimizer": self.optimizer.state_dict(),
+                 "epoch": self.epoch_step}, file_path)
 
 
 class DMANetDetection(AbstractTrainer):
@@ -185,49 +177,70 @@ class DMANetDetection(AbstractTrainer):
         :param axis:
         :return: [type]: [description]
         """
-        actual_num = torch.unsqueeze(actual_num, axis + 1)
+        actual_num = actual_num.unsqueeze(axis + 1)
         max_num_shape = [1] * len(actual_num.shape)
         max_num_shape[axis + 1] = -1
-        max_num = torch.arange(max_num, dtype=torch.int, device=actual_num.device).view(max_num_shape)
-        paddings_indicator = actual_num.int() > max_num
+        max_num = jt.arange(max_num, dtype=jt.int32).view(max_num_shape)
+        paddings_indicator = actual_num.int32() > max_num
         # paddings_indicator shape : [batch_size, max_num]
         return paddings_indicator
 
     def process_pillar_input(self, events, idx, idy):
-        pillar_x = events[idy][idx][0][..., 0].unsqueeze(0).unsqueeze(0)
-        pillar_y = events[idy][idx][0][..., 1].unsqueeze(0).unsqueeze(0)
-        pillar_t = events[idy][idx][0][..., 2].unsqueeze(0).unsqueeze(0)
-        coors = events[idy][idx][1]
-        num_points_per_pillar = events[idy][idx][2].unsqueeze(0)
-        num_points_per_a_pillar = pillar_x.size()[3]
-        mask = self.get_paddings_indicator(num_points_per_pillar, num_points_per_a_pillar, axis=0)
-        mask = mask.permute(0, 2, 1).unsqueeze(1).type_as(pillar_x)
-        input = [pillar_x.cuda(), pillar_y.cuda(), pillar_t.cuda(),
-                     num_points_per_pillar.cuda(), mask.cuda(), coors.cuda()]
-        return input
+        try:
+            # 添加边界检查
+            if idy >= len(events):
+                raise IndexError(f"idy ({idy}) >= len(events) ({len(events)})")
+            
+            if idx >= len(events[idy]):
+                raise IndexError(f"idx ({idx}) >= len(events[{idy}]) ({len(events[idy])})")
+            
+            if len(events[idy][idx]) == 0:
+                raise IndexError(f"events[{idy}][{idx}] is empty")
+            
+            pillar_x = events[idy][idx][0][..., 0].unsqueeze(0).unsqueeze(0)
+            pillar_y = events[idy][idx][0][..., 1].unsqueeze(0).unsqueeze(0)
+            pillar_t = events[idy][idx][0][..., 2].unsqueeze(0).unsqueeze(0)
+            coors = events[idy][idx][1]
+            num_points_per_pillar = events[idy][idx][2].unsqueeze(0)
+            num_points_per_a_pillar = pillar_x.size()[3]
+            mask = self.get_paddings_indicator(num_points_per_pillar, num_points_per_a_pillar, axis=0)
+            mask = mask.permute(0, 2, 1).unsqueeze(1).float()
+            
+            # 在Jittor中直接使用tensor，不需要.cuda()
+            input = [pillar_x, pillar_y, pillar_t, num_points_per_pillar, mask, coors]
+            return input
+        except Exception as e:
+            print(f"Error in process_pillar_input: {str(e)}")
+            print(f"  idy: {idy}, idx: {idx}")
+            print(f"  len(events): {len(events)}")
+            if idy < len(events):
+                print(f"  len(events[{idy}]): {len(events[idy])}")
+                if idx < len(events[idy]):
+                    print(f"  len(events[{idy}][{idx}]): {len(events[idy][idx])}")
+            raise
 
     def buildModel(self):
         """Creates the specified model"""
         if self.settings.depth == 18:
             self.model = dmanet_network.DMANet18(in_channels=self.settings.nr_input_channels,
-                                                       num_classes=len(self.settings.object_classes), pretrained=False)
+                                                num_classes=len(self.settings.object_classes), pretrained=False)
         elif self.settings.depth == 34:
             self.model = dmanet_network.DMANet34(in_channels=self.settings.nr_input_channels,
-                                                       num_classes=len(self.settings.object_classes), pretrained=False)
+                                                num_classes=len(self.settings.object_classes), pretrained=False)
         elif self.settings.depth == 50:
             self.model = dmanet_network.DMANet50(in_channels=self.settings.nr_input_channels,
-                                                       num_classes=len(self.settings.object_classes), pretrained=False)
+                                                num_classes=len(self.settings.object_classes), pretrained=False)
         elif self.settings.depth == 101:
             self.model = dmanet_network.DMANet101(in_channels=self.settings.nr_input_channels,
-                                                        num_classes=len(self.settings.object_classes), pretrained=False)
+                                                 num_classes=len(self.settings.object_classes), pretrained=False)
         elif self.settings.depth == 152:
             self.model = dmanet_network.DMANet152(in_channels=self.settings.nr_input_channels,
-                                                        num_classes=len(self.settings.object_classes), pretrained=False)
+                                                 num_classes=len(self.settings.object_classes), pretrained=False)
         else:
             raise ValueError('Unsupported model depth, must be one of 18, 34, 50, 101, 152')
 
         self.params_initialize()
-        self.model.to(self.settings.gpu_device)
+        
         if self.settings.use_pretrained:
             self.loadPretrainedWeights()
 
@@ -236,20 +249,21 @@ class DMANetDetection(AbstractTrainer):
         for m in self.model.modules():
             if isinstance(m, nn.Conv2d):
                 n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-                m.weight.data.normal_(0, math.sqrt(2. / n))
+                jt.init.gauss_(m.weight, 0, math.sqrt(2. / n))
             elif isinstance(m, nn.BatchNorm2d):
-                m.weight.data.fill_(1)
-                m.bias.data.zero_()
+                jt.init.constant_(m.weight, 1)
+                jt.init.constant_(m.bias, 0)
+        
         prior = 0.01
-        self.model.classificationModel.output.weight.data.fill_(0)
-        self.model.classificationModel.output.bias.data.fill_(-math.log((1.0 - prior) / prior))
-        self.model.regressionModel.output.weight.data.fill_(0)
-        self.model.regressionModel.output.bias.data.fill_(0)
+        jt.init.constant_(self.model.classificationModel.output.weight, 0)
+        jt.init.constant_(self.model.classificationModel.output.bias, -math.log((1.0 - prior) / prior))
+        jt.init.constant_(self.model.regressionModel.output.weight, 0)
+        jt.init.constant_(self.model.regressionModel.output.bias, 0)
 
     def loadPretrainedWeights(self):
         """Loads pretrained model weights"""
         print("\033[0;33m Using pretrained model! \033[0m")
-        checkpoint = torch.load(self.settings.pretrained_model)
+        checkpoint = jt.load(self.settings.pretrained_model)
         try:
             pretrained_dict = checkpoint["state_dict"]
         except KeyError:
@@ -260,74 +274,110 @@ class DMANetDetection(AbstractTrainer):
 
     def train(self):
         """Main training and validation loop"""
-
         while self.epoch_step <= self.settings.epoch:
             self.trainEpoch()
             self.validationEpoch()
-
             self.epoch_step += 1
 
     def trainEpoch(self):
         self.pbar = tqdm.tqdm(total=self.nr_train_epochs, unit="Batch", unit_scale=True,
-                              desc="Epoch: {}".format(self.epoch_step))
+                            desc="Epoch: {}".format(self.epoch_step))
         self.model.train()
-        focal_loss = FocalLoss()
+        focal_loss = FocalLoss()    
 
         for i_batch, sample_batched in enumerate(self.train_loader):
             if self.epoch_step < self.settings.warm:
                 self.warmup_schedular.step()
+            
             bounding_box, pos_events, neg_events = sample_batched
             prev_states, prev_features = None, None
-            batch_reg_loss, batch_cls_loss, batch_total_loss = 0, 0, 0
-            self.optimizer.zero_grad()  # reset gradient
+            
+            # 初始化损失变量
+            batch_total_loss = jt.array(0.0)
+            batch_cls_loss = jt.array(0.0)
+            batch_reg_loss = jt.array(0.0)
+            
+            loss_count = 0
 
             for idx in range(self.settings.seq_len):
                 pos_input_list, neg_input_list = [], []
                 bounding_box_now, bounding_box_next = [], []
+                
                 for idy in range(self.settings.batch_size):
-                    # process positive/negative events
+                    # 处理正负事件
                     pos_input = self.process_pillar_input(pos_events, idx, idy)
                     neg_input = self.process_pillar_input(neg_events, idx, idy)
+                    pos_input_list.append(pos_input)
+                    neg_input_list.append(neg_input)
 
-                    pos_input_list.append(pos_input), neg_input_list.append(neg_input)
-
-                    # labels
+                    # 标签处理
                     mask_now = (bounding_box[:, -1] == (idy * self.settings.seq_len + idx))
                     mask_next = (bounding_box[:, -1] == (idy * self.settings.seq_len + idx + 1))
                     bbox_now = bounding_box[mask_now][:, :-1]
                     bbox_next = bounding_box[mask_next][:, :-1]
-                    bounding_box_now.append(bbox_now), bounding_box_next.append(bbox_next)
+                    bounding_box_now.append(bbox_now)
+                    bounding_box_next.append(bbox_next)
 
                 classification, regression, anchors, prev_states, prev_features, _ = \
-                    self.model([pos_input_list, neg_input_list], prev_states=prev_states, prev_features=prev_features)
-                cls_loss, reg_loss = focal_loss(classification, regression, anchors, torch.tensor(bounding_box_now).cuda())
-                cls_loss, reg_loss = cls_loss.mean(), reg_loss.mean()
-                batch_cls_loss += cls_loss
-                batch_reg_loss += reg_loss
-                batch_total_loss += (cls_loss + reg_loss)
+                    self.model([pos_input_list, neg_input_list], 
+                            prev_states=prev_states, 
+                            prev_features=prev_features)
+                
+                # 转换边界框为Jittor张量
+                if isinstance(bounding_box_now, list):
+                    bboxes_tensor = jt.array(bounding_box_now)
+                else:
+                    bboxes_tensor = bounding_box_now
+                
+                cls_loss, reg_loss = focal_loss(classification, regression, 
+                                            anchors, bboxes_tensor)
+                
+                # 计算平均损失
+                cls_loss_mean = cls_loss.mean()
+                reg_loss_mean = reg_loss.mean()
+                step_loss = cls_loss_mean + reg_loss_mean
+                
+                # 累积损失
+                batch_total_loss += step_loss
+                batch_cls_loss += cls_loss_mean
+                batch_reg_loss += reg_loss_mean
+                loss_count += 1
 
-            if batch_total_loss != 0:
-                with amp.scale_loss(batch_total_loss, self.optimizer) as scaled_loss:
-                    scaled_loss.backward()
-                nn.utils.clip_grad_norm_(self.model.parameters(), 0.1)
-                self.optimizer.step()  # update parameters of network according to gradient
-            del cls_loss, reg_loss
-            # to visualize loss curve better
-            cls_loss = torch.tensor(0, dtype=torch.float32) if batch_cls_loss == 0 else batch_cls_loss
-            reg_loss = torch.tensor(0, dtype=torch.float32) if batch_reg_loss == 0 else batch_reg_loss
-            total_loss = torch.tensor(0, dtype=torch.float32) if batch_total_loss == 0 else batch_total_loss
-            self.pbar.set_postfix(Conf=cls_loss.item(), Loc=reg_loss.item(), Total_Loss=total_loss.item())
-            loss_list = [cls_loss, reg_loss, total_loss]
-            # Write losses statistics
+            # 计算平均损失
+            if loss_count > 0:
+                batch_total_loss = batch_total_loss / loss_count
+                batch_cls_loss = batch_cls_loss / loss_count
+                batch_reg_loss = batch_reg_loss / loss_count
+
+            # 反向传播
+            self.optimizer.step(batch_total_loss)
+            self.optimizer.clip_grad_norm(0.1)  
+            
+            # 获取损失值用于记录
+            cls_loss_val = batch_cls_loss.item() if hasattr(batch_cls_loss, 'item') else float(batch_cls_loss)
+            reg_loss_val = batch_reg_loss.item() if hasattr(batch_reg_loss, 'item') else float(batch_reg_loss)
+            total_loss_val = batch_total_loss.item() if hasattr(batch_total_loss, 'item') else float(batch_total_loss)
+            
+            # 更新进度条和记录损失
+            self.pbar.set_postfix(Conf=cls_loss_val, Loc=reg_loss_val, Total_Loss=total_loss_val)
+            loss_list = [
+                jt.array(cls_loss_val), 
+                jt.array(reg_loss_val), 
+                jt.array(total_loss_val)
+            ]
             self.storeLossesObjectDetection(loss_list)
             self.pbar.update(1)
             self.batch_step += 1
+            
+            # 记录批次学习率
             self.writer.add_scalar("Training/Learning_Rate_batch", self.getLearningRate(), self.batch_step)
 
+            # 学习率调度
             if self.epoch_step >= self.settings.warm:
-                self.train_schedular.step((self.epoch_step - self.settings.warm) * len(self.train_loader) + i_batch)
+                self.train_schedular.step()
+        
+        # 记录epoch学习率
         self.writer.add_scalar("Training/Learning_Rate", self.getLearningRate(), self.epoch_step)
-
         self.pbar.close()
 
     def validationEpoch(self):
@@ -335,14 +385,14 @@ class DMANetDetection(AbstractTrainer):
         self.model.eval()
         dmanet_detector = DMANet_Detector(conf_threshold=0.1, iou_threshold=0.5)
 
-        iouv = torch.linspace(0.5, 0.95, 10).to(self.settings.gpu_device)
+        iouv = jt.linspace(0.5, 0.95, 10)
         niou = iouv.numel()  # len(iouv)
         seen = 0
         precision, recall, f1_score, m_precision, m_recall, map50, map = 0., 0., 0., 0., 0., 0., 0.
         stats, ap, ap_class = [], [], []
 
-        scale = torch.tensor([self.settings.resize, self.settings.resize, self.settings.resize, self.settings.resize],
-                             dtype=torch.float32).to(self.settings.gpu_device)
+        scale = jt.array([self.settings.resize, self.settings.resize, self.settings.resize, self.settings.resize],
+                        dtype=jt.float32)
 
         prev_states = None
         for i_batch, sample_batched in enumerate(self.val_loader):
@@ -350,10 +400,10 @@ class DMANetDetection(AbstractTrainer):
             detection_result = []  # detection result for computing mAP
             bounding_box, pos_events, neg_events = sample_batched
 
-            with torch.no_grad():
+            with jt.no_grad():
                 for idx in range(self.settings.seq_len):
                     pos_input_list, neg_input_list = [], []
-                    for idy in range(self.settings.batch_size // self.settings.batch_size):
+                    for idy in range(self.settings.batch_size):
                         # process positive/negative events
                         pos_input = self.process_pillar_input(pos_events, idx, idy)
                         neg_input = self.process_pillar_input(neg_events, idx, idy)
@@ -370,39 +420,40 @@ class DMANetDetection(AbstractTrainer):
                 bbox = bounding_box[bounding_box[:, -1] == si]  # each batch
                 np_labels = bbox[bbox[:, -2] != -1.]
                 np_labels = np_labels[:, [4, 0, 1, 2, 3]]  # [cls, coords]
-                labels = torch.from_numpy(np_labels).to(self.settings.gpu_device)
+                labels = jt.array(np_labels)
 
                 nl = len(labels)
-                tcls = labels[:, 0].tolist() if nl else []
+                tcls = labels[:, 0].numpy().tolist() if nl else []
                 seen += 1
 
                 if len(pred) == 0:
                     if nl:
-                        stats.append((torch.zeros(0, niou, dtype=torch.bool), torch.Tensor(), torch.Tensor(), tcls))
+                        stats.append((jt.zeros(0, niou, dtype=jt.bool), jt.array([]), jt.array([]), tcls))
                     continue
+                
                 # predictions
                 predn = pred.clone()
                 predn[:, :4] /= self.settings.resize  # percent coordinates
                 predn[:, :4] *= scale  # absolute coordinates, 1280x720
 
                 # assign all predictions as incorrect
-                correct = torch.zeros(pred.shape[0], niou, dtype=torch.bool).to(self.settings.gpu_device)
+                correct = jt.zeros(pred.shape[0], niou, dtype=jt.bool)
                 if nl:
                     detected = []  # target indices
                     tcls_tensor = labels[:, 0]
                     # target boxes
                     tbox = labels[:, 1:5]
                     # per target class
-                    for cls in torch.unique(tcls_tensor):
-                        ti = (cls == tcls_tensor).nonzero(as_tuple=False).view(-1)  # prediction indices
-                        pi = (cls == pred[:, 5]).nonzero(as_tuple=False).view(-1)  # target indices
+                    for cls in jt.unique(tcls_tensor):
+                        ti = (cls == tcls_tensor).nonzero().view(-1)  # prediction indices
+                        pi = (cls == pred[:, 5]).nonzero().view(-1)  # target indices
                         # search for detections
                         if pi.shape[0]:
                             # prediction to target ious
                             ious, i = box_iou(predn[pi, :4], tbox[ti]).max(1)  # best ious, indices
                             # append detections
                             detected_set = set()
-                            for j in (ious > iouv[0]).nonzero(as_tuple=False):
+                            for j in (ious > iouv[0]).nonzero():
                                 d = ti[i[j]]  # detected target
                                 if d.item() not in detected_set:
                                     detected_set.add(d.item())
@@ -410,7 +461,7 @@ class DMANetDetection(AbstractTrainer):
                                     correct[pi[j]] = ious[j] > iouv  # iou_thres is 1xn
                                     if len(detected) == nl:  # all targets already located in images
                                         break
-                stats.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))
+                stats.append((correct.numpy(), pred[:, 4].numpy(), pred[:, 5].numpy(), tcls))
         self.pbar.close()
 
         # Directories
@@ -425,7 +476,7 @@ class DMANetDetection(AbstractTrainer):
             m_precision, m_recall, map50, map = precision.mean(), recall.mean(), ap50.mean(), ap.mean()
             nt = np.bincount(stats[3].astype(np.int64), minlength=self.nr_classes-1)  # number of targets per class
         else:
-            nt = torch.zeros(1)
+            nt = jt.zeros(1)
 
         # Print results
         pf = "%8s" + "%18i" * 2 + "%19.3g" * 4  # print format
@@ -439,24 +490,26 @@ class DMANetDetection(AbstractTrainer):
                 print(pf % (names[c], seen, nt[c], precision[i], recall[i], ap50[i], ap[i]))
                 self.writer.add_scalar("Validation/" + names[c], ap50[i], self.epoch_step)
         self.writer.add_scalar("Validation/mAP@0.5", map50, self.epoch_step)
-        # if self.max_validation_mAP < map50:
-        #     self.max_validation_mAP = map50
-        self.saveCheckpoint()
+        
+        if self.epoch_step % 5 == 0:
+            self.saveCheckpoint()
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train network.")
-    parser.add_argument("--settings_file", type=str, default="/home/wds/DMANet/config/settings.yaml",
-                        help="Path to settings yaml")
-
+def main():
+    """Main function to run the training"""
+    parser = argparse.ArgumentParser(description='Train DMANet')
+    parser.add_argument('--settings_file', type=str, default='config/settings.yaml',
+                        help='Path to the settings file')
     args = parser.parse_args()
-    settings_filepath = args.settings_file
-    settings = Settings(settings_filepath, generate_log=True)
-
-    if settings.model_name == "dmanet":
-        trainer = DMANetDetection(settings)
-    else:
-        raise ValueError("Model name %s specified in the settings file is not implemented" % settings.model_name)
-
+    
+    # Load settings
+    settings = Settings(args.settings_file)
+    
+    # Create trainer and start training
+    trainer = DMANetDetection(settings)
     trainer.train()
 
+
+
+if __name__ == '__main__':
+    main()

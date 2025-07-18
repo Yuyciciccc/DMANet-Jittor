@@ -28,7 +28,7 @@ class FeaturesPyramidNetwork(nn.Module):
         self.P6 = nn.Conv2d(C5_size, feature_size, kernel_size=3, stride=2, padding=1)
 
         # "P7 is computed by applying ReLU followed by a 3x3 stride-2 conv on P6"
-        self.P7_1 = nn.relu()
+        self.P7_1 = nn.Relu()
         self.P7_2 = nn.Conv2d(feature_size, feature_size, kernel_size=3, stride=2, padding=1)
 
     def execute(self, inputs):

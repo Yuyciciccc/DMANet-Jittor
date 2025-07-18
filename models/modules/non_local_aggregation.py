@@ -51,13 +51,13 @@ class NonLocalAggregationModule(nn.Module):
 
         phi_x = self.phi(adja_x)
         phi_x = self.phi_max(phi_x).view(n, self.inter_channels, -1)  # N x C x HW
-        pairwise_weight = jt.matmul(theta_x.type(jt.float32), phi_x.type(jt.float32))  # N x HW x HW
+        pairwise_weight = jt.matmul(theta_x.astype(jt.float32), phi_x.astype(jt.float32))  # N x HW x HW
 
         # pairwise_weight /= theta_x.shape[-1]
         pairwise_weight /= theta_x.shape[-1] ** 0.5
         pairwise_weight = pairwise_weight.softmax(dim=-1)
 
-        y = jt.matmul(pairwise_weight, g_x.type(jt.float32))  # N x HW x C
+        y = jt.matmul(pairwise_weight, g_x.astype(jt.float32))  # N x HW x C
         y = y.permute(0, 2, 1).contiguous().reshape(n, self.inter_channels, h, w)  # must contiguous
         att_x = self.att_layer(y)
         x = curr_x + att_x
@@ -74,7 +74,7 @@ class NonLocalAggregationModule(nn.Module):
 
 
 def normal_init(module, mean=0, std=1, bias=0):
-    nn.init.normal_(module.weight, mean, std)
+    nn.init.gauss_(module.weight, mean, std)
     if hasattr(module, "bias"):
         nn.init.constant_(module.bias, bias)
 

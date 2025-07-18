@@ -22,7 +22,7 @@ model:
 optim:
   seq_len: 10
   epoch: 30
-  batch_size: 32
+  batch_size: 4
   init_lr: 2e-4
   exponential_decay: 0.98
   warm: 1
@@ -36,5 +36,5 @@ checkpoint:
   pretrained_model: ""
 hardware:
   # num_cpu_workers: {-1: auto, 0: main thread, >0: ...}
-  num_cpu_workers: -1
+  num_cpu_workers: 2
   gpu_device: 0  # [0 or "cpu"]

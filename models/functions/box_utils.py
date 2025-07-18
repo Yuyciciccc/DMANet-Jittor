@@ -82,8 +82,8 @@ def box_iou(box1, box2):
         # box = 4xn
         return (box[2] - box[0]) * (box[3] - box[1])
 
-    area1 = box_area(box1.T)
-    area2 = box_area(box2.T)
+    area1 = box_area(jt.transpose(box1, 0, 1))  # box1.T: 4xn
+    area2 = box_area(jt.transpose(box1, 0, 1))
 
     # inter(N,M) = (rb(N,M,2) - lt(N,M,2)).clamp(0).prod(2)
     lt = jt.maximum(box1[:, None, :2], box2[:, :2])   # left-top: max(x1, y1)

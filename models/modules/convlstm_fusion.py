@@ -22,8 +22,9 @@ class ConvLSTM(nn.Module):
     def execute(self, input_, prev_state=None):
         flag = prev_state
         # get batch and spatial sizes
-        batch_size = input_.data.size()[0]
-        spatial_size = input_.data.size()[2:]
+        batch_size = jt.size(input_.data)[0]
+        spatial_size = jt.size(input_.data)[2:]
+        
 
         # generate empty prev_state, if None is provided
         if prev_state is None:

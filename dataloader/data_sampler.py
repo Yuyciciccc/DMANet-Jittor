@@ -1,6 +1,6 @@
 import numpy as np
 import numba as nb
-from torch.utils.data.sampler import Sampler
+from jittor.dataset import Sampler
 
 
 class RandomContinuousSampler(Sampler):

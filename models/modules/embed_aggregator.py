@@ -8,9 +8,9 @@ class EmbedAggregator(nn.Module):
     def __init__(self, channels, kernel_size=3):
         super(EmbedAggregator, self).__init__()
         self.embed_convs = nn.Sequential(nn.Conv(channels, channels, kernel_size, padding=(kernel_size-1)//2),
-                                         nn.relu(),
+                                         nn.Relu(),
                                          nn.Conv(channels, channels, kernel_size, padding=(kernel_size-1)//2),
-                                         nn.relu())
+                                         nn.ReLU())
 
     def execute(self, curr_x, prev_x):
         """

@@ -7,13 +7,14 @@ from models.functions.voxel_generator import VoxelGenerator
 cv2.setNumThreads(0)
 cv2.ocl.setUseOpenCL(False)  # close mulit-processing of open-cv
 import jittor as jt
+from jittor.dataset import Dataset
 
 def getDataloader(name):
     dataset_dict = {"Prophesee": Prophesee}
     return dataset_dict.get(name)
 
 
-class Prophesee:
+class Prophesee(Dataset):
     def __init__(self, root, object_classes, height, width, mode="training",
                  voxel_size=None, max_num_points=None, max_voxels=None, resize=None, num_bins=None):
         """
@@ -29,6 +30,8 @@ class Prophesee:
         :param max_voxels: 
         :param num_bins: 
         """
+        super(Prophesee, self).__init__()
+
         if mode == "training":
             mode = "train"
         elif mode == "validation":
@@ -62,6 +65,8 @@ class Prophesee:
 
         self.nr_samples = len(self.event_files)
         # self.nr_samples = len(self.event_files) - len(self.index_files)*batch_size
+        self.total_len = len(self.event_files)
+
 
     def __len__(self):
         return len(self.event_files)
@@ -71,83 +76,100 @@ class Prophesee:
         returns events and label, loading events from split .npy files
         :param idx:
         :return: events: (x, y, t, p)
-                 boxes: (N, 4), which is consist of (x_min, y_min, x_max, y_max)
-                 histogram: (512, 512, 10)
+                boxes: (N, 4), which is consist of (x_min, y_min, x_max, y_max)
+                histogram: (512, 512, 10)
         """
+        # 初始化三个列表来保存该批次的标注、正样本和负样本
         boxes_list, pos_event_list, neg_event_list = [], [], []
+        
+        # 获取每一帧的标签文件和事件文件
         bbox_file = os.path.join(self.root, self.mode, "labels", self.label_files[idx])
         event_file = os.path.join(self.root, self.mode, "events", self.event_files[idx])
 
+        # 加载标签和事件数据（标签是bounding boxes，事件是 (x, y, t, p)）
         labels_np = np.load(bbox_file)
         events_np = np.load(event_file)
+
+        # 迭代处理每个标签文件中的数据
         for npz_num in range(len(labels_np)):
+            # 创建一个大小为 max_nr_bbox 的空数组，用于保存标签
             const_size_box = np.ones([self.max_nr_bbox, 5]) * -1
+            
             try:
+                # 尝试读取该索引的标签和事件数据
                 ev_npz = "e" + str(npz_num)
                 lb_npz = "l" + str(npz_num)
                 events_np_ = events_np[ev_npz]
                 labels_np_ = labels_np[lb_npz]
-            except:   # avoid error: Bad CRC-32 for file
+            except:
+                # 如果发生错误（如CRC错误），则尝试读取上一个索引的数据
                 ev_npz = "e" + str(npz_num-1)
                 lb_npz = "l" + str(npz_num-1)
                 events_np_ = events_np[ev_npz]
                 labels_np_ = labels_np[lb_npz]
 
-            mask = (events_np_['x'] < 1280) * (events_np_['y'] < 720)  # filter events which are out of bounds
+            # 筛选掉不在帧内的事件（例如 x 或 y 超出了图像边界）
+            mask = (events_np_['x'] < 1280) * (events_np_['y'] < 720)
             events_np_ = events_np_[mask]
 
+            # 将结构化的标签和事件数据转为普通的 ndarray 格式
             labels = rfn.structured_to_unstructured(labels_np_)[:, [1, 2, 3, 4, 5]]  # (x, y, w, h, class_id)
             events = rfn.structured_to_unstructured(events_np_)[:, [1, 2, 0, 3]]  # (x, y, t, p)
 
+            # 对标签进行裁剪，确保在图像内
             labels = self.cropToFrame(labels)
-            labels = self.filter_boxes(labels, 60, 20)  # filter small boxes
+            labels = self.filter_boxes(labels, 60, 20)  # 过滤掉太小的框
 
-            # select 16.6ms event streams
-            # delta_t = (events[-1, 2] - events[0, 2]) / 3
-            # flag_t = events[0, 2] + delta_t
-            # mask_t = (events[:, 2] < flag_t)
-            # events = events[mask_t]  # 16.6ms event streams
-
-            # downsample and resolution=1280x720 -> resolution=512x512
+            # 对事件流进行下采样，将分辨率从 1280x720 转为 512x512
             events = self.downsample_event_stream(events)
 
+            # 将标签从 [x1, y1, x2, y2, class_id] 转化为标准化格式
             labels[:, 2] += labels[:, 0]
-            labels[:, 3] += labels[:, 1]  # [x1, y1, x2, y2, class]
+            labels[:, 3] += labels[:, 1]  # [x1, y1, x2, y2, class_id]
             labels[:, 0] /= 1280
             labels[:, 1] /= 720
             labels[:, 2] /= 1280
             labels[:, 3] /= 720
 
+            # 将标签的范围缩放到 512x512 图像内
             labels[:, :4] *= 512
             labels[:, 2] -= labels[:, 0]
             labels[:, 3] -= labels[:, 1]
-
             labels[:, 2:-1] += labels[:, :2]  # [x_min, y_min, x_max, y_max, class_id]
 
-            pos_events = events[events[:, -1] == 1.0]
-            neg_events = events[events[:, -1] == 0.0]
+            # 将事件根据正负标签进行分类
+            pos_events = events[events[:, -1] == 1.0]  # positive events (p = 1)
+            neg_events = events[events[:, -1] == 0.0]  # negative events (p = 0)
             pos_events = pos_events.astype(np.float32)
             neg_events = neg_events.astype(np.float32)
-            if not len(neg_events):  # empty
+            
+            # 如果没有负事件，使用正事件来替代
+            if not len(neg_events):
                 neg_events = pos_events
-            if not len(pos_events):  # empty
+            if not len(pos_events):
                 pos_events = neg_events
 
-            pos_voxels, pos_coordinates, pos_num_points = self.voxel_generator.generate(pos_events[:, :3],
-                                                                                        self.max_voxels)
-            neg_voxels, neg_coordinates, neg_num_points = self.voxel_generator.generate(neg_events[:, :3],
-                                                                                        self.max_voxels)
+            # 使用体素生成器对事件数据进行处理，生成体素数据
+            pos_voxels, pos_coordinates, pos_num_points = self.voxel_generator.generate(pos_events[:, :3], self.max_voxels)
+            neg_voxels, neg_coordinates, neg_num_points = self.voxel_generator.generate(neg_events[:, :3], self.max_voxels)
 
+            # 保存框和事件数据
             boxes = labels.astype(np.float32)
             const_size_box[:boxes.shape[0], :] = boxes
             boxes_list.append(const_size_box.astype(np.float32))
-            pos_event_list.append(
-                [torch.from_numpy(pos_voxels), torch.from_numpy(pos_coordinates), torch.from_numpy(pos_num_points)])
-            neg_event_list.append(
-                [torch.from_numpy(neg_voxels), torch.from_numpy(neg_coordinates), torch.from_numpy(neg_num_points)])
+            pos_event_list.append([jt.array(pos_voxels), jt.array(pos_coordinates), jt.array(pos_num_points)])
+            neg_event_list.append([jt.array(neg_voxels), jt.array(neg_coordinates), jt.array(neg_num_points)])
 
-        boxes = np.array(boxes_list)
-        return boxes, pos_event_list, neg_event_list
+        boxes = np.array(boxes_list)  # 将所有的框合并成一个 numpy 数组
+        # print("boxes shape:", boxes.shape)
+        # print("pos_event_list shape:", len(pos_event_list), pos_event_list[0][0].shape, pos_event_list[0][1].shape, pos_event_list[0][2].shape)
+        # print("neg_event_list shape:", len(neg_event_list), neg_event_list[0][0].shape, neg_event_list[0][1].shape, neg_event_list[0][2].shape)
+        # labels, pos_events, neg_events = collate_events([
+        #     (boxes[i], pos_event_list[i], neg_event_list[i]) for i in range(len(boxes))
+        # ])
+        
+        # return labels, pos_events, neg_events
+        return boxes , pos_event_list, neg_event_list
 
     def downsample_event_stream(self, events):
         events[:, 0] = events[:, 0] / 1280 * 512  # x
@@ -268,9 +290,6 @@ class Resize(object):
     def __call__(self, image, boxes=None):
         image = cv2.resize(image, (self.size, self.size), interpolation=cv2.INTER_LINEAR)
         return image, boxes
-
-
-
 
 
 
