@@ -1,6 +1,3 @@
-"""
-Example usage: CUDA_VISIBLE_DEVICES=1, python train_DMANet.py --settings_file "config/settings.yaml"
-"""
 import argparse
 import os
 import abc
@@ -122,7 +119,7 @@ class AbstractTrainer(abc.ABC):
                                                 data_index=self.train_file_indexes)
 
         self.val_loader = self.dataset_loader(val_dataset, mode="validation",
-                                              batch_size=self.settings.batch_size // self.settings.batch_size,
+                                              batch_size=self.settings.batch_size,
                                               num_workers=self.settings.num_cpu_workers, pin_memory=False,
                                               drop_last=True, sampler=None,
                                               data_index=self.val_file_indexes)

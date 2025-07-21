@@ -45,13 +45,13 @@ class DMANet_Detector(nn.Module):
             
             finalAnchorBoxesIndexesValue = jt.array([i] * anchors_nms_idx.shape[0])
 
-
             finalAnchorBoxesIndexes = jt.cat((finalAnchorBoxesIndexes, finalAnchorBoxesIndexesValue))
             finalAnchorBoxesCoordinates = jt.cat((finalAnchorBoxesCoordinates, anchorBoxes[anchors_nms_idx]))
-
+            # print(f"Class {i} - Found {anchors_nms_idx.shape[0]} boxes after NMS")
+        # print(f"Total {len(finalScores)} boxes after NMS")
         if len(finalScores):
             finalScores = finalScores.unsqueeze(-1)
-            finalAnchorBoxesIndexes = finalAnchorBoxesIndexes.type(jt.float32).unsqueeze(-1)
+            finalAnchorBoxesIndexes = finalAnchorBoxesIndexes.astype(jt.float32).unsqueeze(-1)
             finalAnchorBoxesCoordinates = finalAnchorBoxesCoordinates
 
             return jt.cat([finalAnchorBoxesCoordinates, finalScores, finalAnchorBoxesIndexes], dim=1)

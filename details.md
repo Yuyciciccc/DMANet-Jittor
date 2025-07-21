@@ -42,7 +42,7 @@ torch.log() -> jt.log()
 
 ! torch.max() 返回 (最大值,最大值索引)
 jt.max()只返回最大值
-jt.argmax()只返回最大值索引
+jt.argmax()返回最大值索引,最大值
 
 jt没有查到类似于lt \ ge \ ne 等的比较函数，直接使用运算符即可
 targets[torch.lt(IoU_max, 0.4), :] = 0 -> targets[IoU_max < 0.4, :] = 0
@@ -144,3 +144,11 @@ p.grad()  -> p.opt_grad()
 
 nn.utils.clip_grad_norm_(self.model.parameters(), 0.1)
 self.optimizer.clip_grad_norm(0.1)  
+
+model.save()
+model.load()
+
+
+torch.nonzero(as_tuple=False):
+-> jt.nonzero() 没有as_tuple参数
+ 

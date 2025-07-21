@@ -54,11 +54,13 @@ class Settings:
             # --- directories ---
             directories = settings["dir"]
             log_dir = directories["log"]
+            self.log_interval  = directories["log_interval"]
 
             # --- logs ---
             if generate_log:
                 timestr = time.strftime("%Y%m%d-%H%M%S")
                 log_dir = os.path.join(log_dir, timestr)
+                self.log_dir = log_dir
                 os.makedirs(log_dir)
                 settings_copy_filepath = os.path.join(log_dir, "settings.yaml")
                 shutil.copyfile(settings_yaml, settings_copy_filepath)
@@ -66,6 +68,7 @@ class Settings:
                 os.mkdir(self.ckpt_dir)
                 self.vis_dir = os.path.join(log_dir, "visualization")
                 os.mkdir(self.vis_dir)
+
             else:
                 self.ckpt_dir = os.path.join(log_dir, "checkpoints")
                 self.vis_dir = os.path.join(log_dir, "visualization")

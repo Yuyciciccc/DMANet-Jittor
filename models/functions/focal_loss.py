@@ -39,8 +39,6 @@ class FocalLoss(nn.Module):
 
             targets = jt.full(classification.shape, -1.0)    # [A,C]
 
-            # —— 用 index_select 替换原来的布尔切片 —— #
-
             # Negatives: IoU < 0.4 → 0
             neg_mask = IoU_max < 0.4
             neg_rows = jt.index_select(jt.arange(num_anchors), 0, neg_mask.nonzero()[0])
@@ -61,7 +59,6 @@ class FocalLoss(nn.Module):
             targets_flat = targets.reshape([-1])                           # [A*C]
             targets_flat[flat_idx] = 1
             targets = targets_flat.reshape([A, C])
-
 
             num_pos = len(pos_rows)
 
@@ -136,8 +133,7 @@ def calc_iou(a, b):
 
 def test_focal_loss():
     import numpy as np
-    jt.flags.use_cuda = False  # 若有 GPU 且想用 GPU，则设为 True
-
+    jt.flags.use_cuda = True  
     # 参数设置
     batch_size       = 2
     num_anchors      = 5

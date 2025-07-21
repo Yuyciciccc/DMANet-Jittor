@@ -16,6 +16,7 @@
 conda create -n dmanet-jittor python=3.8
 conda activate dmanet-jittor
 pip install jittor==1.3.9.14
+pip install torch
 pip install -r requirements.txt
 ```
 
@@ -35,6 +36,59 @@ wget https://cg.cs.tsinghua.edu.cn/jittor/assets/cutlass.zip -O cutlass.zip
 unzip cutlass.zip
 ```
 
+## 数据准备：
+- 1 Mpx Auto-Detection Sub Dataset 
 
+- Download 1 Mpx Auto-Detection Sub Dataset. (Total 268GB)
 
-## 实验结果对齐：
+Links: [https://pan.baidu.com/s/1YawxZFJhQWVgLye9zZtysA](https://pan.baidu.com/s/1YawxZFJhQWVgLye9zZtysA)
+
+Password: c6j9 
+
+在本次任务中，由于算力的限制，只使用了极少量数据进行实验
+- Dataset structure
+```
+prophesee_dlut   
+├── test
+│   ├── testfilelist00
+│   ├── testfilelist01
+│   └── testfilelist02
+├── train
+│   ├── trainfilelist00
+│   ├── trainfilelist01
+│   ├── trainfilelist02
+│   ├── trainfilelist03
+│   ├── trainfilelist04
+│   ├── trainfilelist05
+│   ├── trainfilelist06
+│   ├── trainfilelist07
+│   ├── trainfilelist08
+│   ├── trainfilelist09
+│   ├── trainfilelist10
+│   ├── trainfilelist11
+│   ├── trainfilelist12
+│   ├── trainfilelist13
+│   └── trainfilelist14
+└── val
+    ├── valfilelist00
+    └── valfilelist01
+```
+## 数据集可视化
+
+```
+python tools/data_check_npz.py --records /root/autodl-tmp/train/trainfilelist00
+```
+![图片](https://github.com/Yuyciciccc/DMANet-Jittor/blob/main/records/debug_0_0.png)
+可视化结果示例如下：
+
+## 训练 & 测试：
+Change settings.yaml, including *dataset_path* and *save_dir*.  
+
+- 1. Training
+```
+python train-jittor.py --settings_file=$YOUR_YAML_PATH
+```
+- 2. Testing
+```
+python test.py --weight=$YOUR_MODEL_PATH
+```
