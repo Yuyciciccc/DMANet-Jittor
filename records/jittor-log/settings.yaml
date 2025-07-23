@@ -29,7 +29,7 @@ optim:
   warm: 1
   tbptt: [-1]
 checkpoint:
-  save_dir: "/root/code/DMANet-Jittor/log/20250722-122307/"  # ./DMANet
+  save_dir: "/root/autodl-tmp/checkpoint"  # ./DMANet
   resume_training: False
   resume_file: ""
   # Networks trained for classification can be reused as starting point for object detection networks on trained the same dataset

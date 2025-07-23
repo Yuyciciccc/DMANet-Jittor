@@ -2,6 +2,10 @@
 只对重要部分进行介绍
 参考：https://cg.cs.tsinghua.edu.cn/jittor/assets/docs/index.html
 
+## CosineAnnealingLR
+官方的CosineAnnealingLR尚未完善，无法读取当前优化器学习率的初始值，故在warmup.py手动实现了CosineAnnealingLR
+
+
 tensor.type(tensor.float64) -> var.astype(jt.float64) 其他同理
 ## cuda设置
 ### pytorch

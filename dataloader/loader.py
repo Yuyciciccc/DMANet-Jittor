@@ -8,6 +8,7 @@ class Loader:
         self.loader = DataLoader(dataset, batch_size=batch_size,
                                                     num_workers=num_workers, 
                                                     drop_last=drop_last, collate_batch=collate_events)
+        self.batch_size = batch_size
         # if mode == "training":
         #     self.loader = DataLoader(dataset, batch_size=batch_size, sampler=sampler,
         #                                               num_workers=num_workers, 
@@ -21,7 +22,7 @@ class Loader:
             yield data
 
     def __len__(self):
-        return len(self.loader)
+        return len(self.loader) // self.batch_size
 
 def collate_events(data):
     labels = []

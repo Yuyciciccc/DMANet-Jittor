@@ -10,7 +10,7 @@ import numpy as np
 import jittor as jt
 import sys
 sys.path.append(".")
-
+import os
 from models.functions.box_utils import box_iou
 
 
@@ -33,6 +33,7 @@ def ap_per_class(tp, conf, pred_cls, target_cls, plot=False, save_dir='.', names
     # Returns
         The average precision as computed in py-faster-rcnn.
     """
+    os.makedirs(save_dir, exist_ok=True)  # make save directory 
 
     # Sort by objectness
     i = np.argsort(-conf)

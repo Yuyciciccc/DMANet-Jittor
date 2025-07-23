@@ -26,7 +26,7 @@ from dataloader.loader import Loader
 from models.functions.smooth_l1_loss import Smooth_L1_Loss
 from config.settings import Settings
 from utils.metrics import ap_per_class
-from models.functions.warmup import WarmUpLR
+from models.functions.warmup import WarmUpLR, CosineAnnealingLR
 
 # 设置Jittor使用GPU
 jt.flags.use_cuda = 1
@@ -52,16 +52,16 @@ class AbstractTrainer(abc.ABC):
         self.dataset_loader = Loader
         self.writer = SummaryWriter(self.settings.ckpt_dir)
 
-        self.createDatasets()  # train_dataset and val_dataset
+        self.createDatasets()  
 
         self.buildModel()
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.settings.init_lr)
 
-        # Jittor中的学习率调度器
+        # print(len(self.train_loader), len(self.val_loader))
         self.warmup_schedular = WarmUpLR(self.optimizer, len(self.train_loader)*self.settings.warm)
-        self.train_schedular = jt.lr_scheduler.CosineAnnealingLR(self.optimizer,
-                                                                 T_max=len(self.train_loader)*(self.settings.epoch-self.settings.warm),
-                                                                 eta_min=self.settings.init_lr*0.1)
+        self.train_schedular = CosineAnnealingLR(self.optimizer,
+                                                T_max=len(self.train_loader)*(self.settings.epoch-self.settings.warm),
+                                                eta_min=self.settings.init_lr*0.1)
 
         self.batch_step = 0
         self.epoch_step = 0
@@ -76,6 +76,8 @@ class AbstractTrainer(abc.ABC):
 
         if settings.resume_training:
             self.loadCheckpoint(self.settings.resume_ckpt_file)
+
+        self.log_dir = "/root/code/DMANet-Jittor/log/20250722-122307"
 
     def _init_logger(self):
         """Create file logger and dump all hyperparameters."""
@@ -175,12 +177,7 @@ class AbstractTrainer(abc.ABC):
 
     def loadCheckpoint(self, filename):
         if os.path.isfile(filename):
-            print("=> loading checkpoint '{}'".format(filename))
-            checkpoint = jt.load(filename)
-            self.epoch_step = checkpoint['epoch'] + 1
-            self.model.load_state_dict(checkpoint["state_dict"])
-            self.optimizer.load_state_dict(checkpoint["optimizer"])
-            print("=> loaded checkpoint '{}' (epoch {})".format(filename, checkpoint["epoch"]))
+            self.model.load(filename)
         else:
             print("=> no checkpoint found at '{}'".format(filename))
 
@@ -327,6 +324,7 @@ class DMANetDetection(AbstractTrainer):
             
             if self.epoch_step < self.settings.warm:
                 self.warmup_schedular.step()
+                print(f"\033[0;33m Warmup learning rate: {self.getLearningRate()} \033[0m")
 
             bounding_box, pos_events, neg_events = sample_batched
             prev_states, prev_features = None, None
@@ -376,16 +374,19 @@ class DMANetDetection(AbstractTrainer):
             epoch_fwd_time += fwd_time
             self.fwd_times.append(fwd_time)
 
-            if loss_count > 0:
-                batch_total_loss = batch_total_loss / loss_count
-                batch_cls_loss = batch_cls_loss / loss_count
-                batch_reg_loss = batch_reg_loss / loss_count
+            # if loss_count > 0:
+            #     batch_total_loss = batch_total_loss / loss_count
+            #     batch_cls_loss = batch_cls_loss / loss_count
+            #     batch_reg_loss = batch_reg_loss / loss_count
 
             bwd_start = time.time()
             self.optimizer.step(batch_total_loss)
             self.optimizer.clip_grad_norm(0.1)
+
             if self.epoch_step >= self.settings.warm:
                 self.train_schedular.step()
+                print(f"\033[0;33m Learning rate: {self.getLearningRate()} \033[0m")
+
             bwd_time = time.time() - bwd_start
             epoch_bwd_time += bwd_time
             self.bwd_times.append(bwd_time)
@@ -672,7 +673,6 @@ class DMANetDetection(AbstractTrainer):
         test_loader = self.dataset_loader(test_dataset, mode="testing",
                                             batch_size=self.settings.batch_size,
                                             num_workers=self.settings.num_cpu_workers,
-                                            pin_memory=False,
                                             drop_last=False,
                                             sampler=None,
                                             data_index=test_dataset.file_index())
@@ -821,8 +821,8 @@ class DMANetDetection(AbstractTrainer):
                                     if pi.numel() > 0 and ti.numel() > 0:
                                         # 计算IoU
                                         result = box_iou(pred[pi, :4], tbox[ti])
-                                        ious = jt.max(result, dim = 1)
-                                        i = jt.argmax(result, dim = 1)
+                                        i , ious = jt.argmax(result, dim = 1)
+
                                         # 标记正确检测
                                         detected_set = set()
                                         for j in (ious > iouv[0]).nonzero().view(-1):
@@ -908,6 +908,7 @@ class DMANetDetection(AbstractTrainer):
 
     def save_sequence_results(self, seq_idx, detections, results_dir):
         """保存序列的检测结果到文件"""
+        os.makedirs(results_dir, exist_ok=True)
         seq_dir = os.path.join(results_dir, f"seq_{seq_idx:04d}")
         os.makedirs(seq_dir, exist_ok=True)
         
