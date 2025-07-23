@@ -1,158 +1,143 @@
-详细记录了如何将DMANet的pytorch版代码转化为jittor代码
-只对重要部分进行介绍
-参考：https://cg.cs.tsinghua.edu.cn/jittor/assets/docs/index.html
+## DMANet PyTorch → Jittor 转换指南
 
-## CosineAnnealingLR
-官方的CosineAnnealingLR尚未完善，无法读取当前优化器学习率的初始值，故在warmup.py手动实现了CosineAnnealingLR
+本指南聚焦于将 DMANet 的 PyTorch 实现快速迁移至 Jittor，仅涵盖关键步骤及示例代码。详细配置与 API 可参阅 [Jittor 官方文档](https://cg.cs.tsinghua.edu.cn/jittor/assets/docs/index.html)。
 
+---
 
-tensor.type(tensor.float64) -> var.astype(jt.float64) 其他同理
-## cuda设置
-### pytorch
+### 1. 全局 CUDA 配置
 
-pytorch为显式调用：每个 Tensor 或 Module 都要 .to(device)
+* **PyTorch**：需要在每个 Tensor 或 Module 上显式调用 `.to(device)`。
+* **Jittor**：通过全局开关统一设置，移除所有显式 `.to()`：
 
-### jittor
+  ```python
+  # train_jittor.py 或 AbstractTrainer/__init__.py
+  import jittor as jt
+  from config import settings  # 假设包含 gpu_device
 
-jittor采用全局开关，只需要在训练脚本前统一设置即可
-修改为jittor版本只需要去除所有的显示调用，添加以下代码即可
-``` train.py AbstractTrainer/__init__.py
-    if settings.gpu_device != "cpu":
-        jt.flags.use_cuda = 1
-        jt.set_cuda_device(int(settings.gpu_device))
-```
+  if settings.gpu_device != "cpu":
+      jt.flags.use_cuda = 1
+      jt.set_cuda_device(int(settings.gpu_device))
+  ```
 
-## models.functions
+---
 
-### anchors.py
+### 2. 核心 Tensor/Var 操作映射
 
-numpy转换为tensor/Var
-torch.from_numpy() -> jt.array()
+| 操作         | PyTorch API                         | Jittor 对应 API                         |
+| ---------- | ----------------------------------- | ------------------------------------- |
+| 从 NumPy 创建 | `torch.from_numpy(ndarray)`         | `jt.array(ndarray)`                   |
+| 限幅         | `torch.clamp(x, min=, max=)`        | `jt.clamp(x, min_v=, max_v=)`         |
+| 指数         | `torch.exp(x)`                      | `jt.exp(x)`                           |
+| 堆叠         | `torch.stack(list)`                 | `jt.stack(list)`                      |
+| 元素最小/最大    | `torch.min(a,b)` / `torch.max(a,b)` | `jt.minimum(a,b)` / `jt.maximum(a,b)` |
+| 全 1 张量     | `torch.ones(shape)`                 | `jt.ones(shape)`                      |
+| 对数         | `torch.log(x)`                      | `jt.log(x)`                           |
+| 最大值/索引     | `torch.max(x,dim)` → `(vals, idxs)` | `jt.max(x,dim)` → `vals` （仅值）         |
+| \`argmax\` | `torch.argmax(x,dim)` → `idxs`      | `jt.argmax(x,dim)` → `idxs`           |
+| 比较运算       | `torch.lt(a,b)` 等                   | 直接用运算符：`a < b`, `a >= b` 等            |
+| 条件筛选       | `torch.where(cond, x, y)`           | `jt.where(cond, x, y)`                |
+| 转置         | `x.t()`                             | `jt.transpose(x)`                     |
+| 类型转换       | `x.type(torch.float64)`             | `x.astype(jt.float64)`                |
+| 矩阵乘        | `torch.mm(a,b)`                     | `a @ b` 或 `jt.matmul(a,b)`            |
+| 形状         | `x.size()[0]`                       | `jt.size(x)[0]`                       |
+| 非零位置       | `torch.nonzero(x, as_tuple=False)`  | `jt.nonzero(x)`                       |
 
-### box_utils.py
+---
 
-torch.clamp(tensor , min = , max = ) -> jt.clamp(var , min_v = , max_v =)
-torch.exp() -> jt.exp()
-torch.stack() -> jt.stack()
+### 3. 学习率调度（Warmup + 余弦退火）
 
-! 逐元素比较大小 
-torch.min() -> jt.minimum()
-torch.max() -> jt.maximum()
+* **文件**：`models/functions/warmup.py` & `train_jittor.py`
+* **Warmup**：
 
-### focal.py
+  * 将 PyTorch 的 `_LRScheduler` 替换为 `jittor.optim.LRScheduler`。
+* **余弦退火**：
 
-torch.ones() -> jt.ones()
-torch.log() -> jt.log()
+  * 虽然 Jittor 提供 `CosineAnnealingLR`，但功能尚不完善。可在 `warmup.py` 中自定义实现：
 
-! torch.max() 返回 (最大值,最大值索引)
-jt.max()只返回最大值
-jt.argmax()返回最大值索引,最大值
+    ```python
+    class CosineAnnealingLR(LRScheduler):
+        def __init__(...):
+            # 手动计算余弦退火学习率
+        def step(self):
+            # 更新 lr
+    ```
 
-jt没有查到类似于lt \ ge \ ne 等的比较函数，直接使用运算符即可
-targets[torch.lt(IoU_max, 0.4), :] = 0 -> targets[IoU_max < 0.4, :] = 0
-positive_indices = torch.ge(IoU_max, 0.5) -> positive_indices = IoU_max >= 0.5
+---
 
-torch.where() -> jt.where
-targets.t() -> jt.transpose(targets)
+### 4. 模型与模块 API 映射
 
-### warmup.py
+| PyTorch 模块              | Jittor 模块                                   | 说明                       |
+| ----------------------- | ------------------------------------------- | ------------------------ |
+| `import torch.nn as nn` | `import jittor.nn as nn`                    | 通用替换                     |
+| `forward(self, ...)`    | `execute(self, ...)`                        | Jittor 默认前向接口            |
+| `nn.Conv2d(...)`        | `nn.Conv(...)` 或 `nn.Conv2d(...)`           | 两者等效，参数一致                |
+| `nn.ReLU(inplace=True)` | `nn.ReLU()` 或 `nn.Relu()`                   | 默认 `inplace=True`，不支持该参数 |
+| `nn.Linear(...)`        | `nn.Linear(...)`                            | 一致                       |
+| `nn.BatchNorm2d(...)`   | `nn.BatchNorm2d(...)` 或 `nn.BatchNorm(...)` | 批归一化层                    |
+| 权重初始化（Normal）           | `nn.init.normal_()`                         | 替换为 `nn.init.gauss_()`   |
 
-pytorch版本中使用了torch提供的_LRScheduler作为基类实现WarmUpLR，以实现动态调整学习率
-在jittor中，同样提供了class jittor.optim.LRScheduler(optimizer, last_epoch=-1)
-只需要进行简单替换即可
+**其他常用映射**：
 
+* **NMS**：
 
-## models.modules
+  ```python
+  # PyTorch
+  idxs = torchvision.ops.nms(boxes, scores, iou_thresh)
+  # Jittor：输入 [x1,y1,x2,y2,score]
+  dets = jt.concat([boxes, scores.unsqueeze(1)], dim=1)
+  idxs = jt.nms(dets, iou_thresh)
+  ```
 
-class 中forward 标识符直接替换为execute
-import jittor.nn as nn
+* **预训练权重加载**：自定义 `load_pretrained_resnet_weights(path)` 替代 `model_zoo.load_url()`。
 
-### embed_aggregator.py
+* **Sampler**：
 
-nn.Conv2d(channels, channels, kernel_size, padding=(kernel_size-1)//2)   ->  nn.Conv(channels, channels, kernel_size, padding=(kernel_size-1)//2) or nn.Conv2(...)
-在jittor中， nn.Conv 和 nn.Conv2d 完全相同
-nn.ReLU(inplace=True) -> nn.Relu() or nn.ReLU() 在jittor中，inplace=True是默认的，且没有这个形参
+  ```python
+  # PyTorch
+  sampler = torch.utils.data.SubsetRandomSampler(list(range(len(dataset))))
+  # Jittor
+  sampler = jt.dataset.SubsetRandomSampler((dataset, 0, len(dataset)-1))
+  ```
 
-### eventpillars.py
+* **DataLoader**：移除 `pin_memory`，将 `collate_fn` 改为 `collate_batch`。
 
-矩阵相乘
-torch.mm() -> jittor.matual() or @
+---
 
-torch.nn.Linear()   -> jittor.nn.Linear()
+### 5. 训练与优化差异
 
-torch.nn.BarchNorm2d() -> jittor.nn.BatchNorm() or jittor.nn.BatchNorm1d() or jittor.nn.BatchNorm2d() or jittor.nn.BatchNorm3d()
+* **反向传播**：三种等效写法：
 
+  ```python
+  optimizer.zero_grad()
+  loss.backward()
+  optimizer.step()
+  ```
 
-### non_local_aggregator.py
-    正态分布初始化权重
-    nn.init.normal_(module.weight, mean, std)
--> nn.init.gauss_(module.weight,mean,std)
-### dmanet_dector.py
-torchvision.ops.nms(anchorBoxes, scores, iou_threshold)  -> jt.nms(dets, iou_threshold)
-jittor的nms dets为[N,5],dets = [boxes, scores]
-修改结果：
-anchors_nms_idx = jt.nms(jt.concat([anchorBoxes, scores.unsqueeze(1)], dim=1) , self.iou_threshold)
+  ```python
+  optimizer.zero_grad()
+  optimizer.backward(loss)
+  optimizer.step()
+  ```
 
-### convlstm_fusion.py
+  ```python
+  optimizer.step(loss)
+  ```
+* **参数梯度访问**：`p.grad` → `p.opt_grad()`。
+* **梯度裁剪**：
 
-batch_size = input_.data.size()[0]
-spatial_size = input_.data.size()[2:]
+  ```python
+  # PyTorch
+  nn.utils.clip_grad_norm_(model.parameters(), 0.1)
+  # Jittor
+  optimizer.clip_grad_norm(0.1)
+  ```
+* **模型保存/加载**：
 
-batch_size = jt.size(input_.data)[0]
-spatial_size = jt.size(input_.data)[2:]
+  ```python
+  model.save(path)
+  model.load(path)
+  ```
 
+---
 
-### dmanet_network.py
-
-Pytorch版本下 使用model_zoo.load_url读取resnet模型参数
-在jittor版本中，我使用load_pretrained_resnet_weights函数读取参数
-模型的参数使用jittor官方的库为resnet.resnet18(pretrained=True)
-
-## train-jittor.py
-
-        self.train_sampler = jt.dataset.SubsetRandomSampler((train_dataset),(0 , len(train_dataset) - 1))
-        self.train_sampler = torch.utils.data.sampler.SubsetRandomSampler(list(range(len(train_dataset))))
-## dataloader/dataset.py
-
-在jittor中添加total_len属性   self.total_len = len(self.data)  
-删去pin_memory 
-jittor.dataset.Dataset 的collate_fn参数更名为collate_batch，
-
-
-Jittor 的 getitem 运算（即 Var[...]）目前仅支持单一维度或等价于 ellipsis 的简单切片，不支持复杂的多维切片。
-因此，我们需要使用更通用的函数接口：jittor.misc.index_select(...)。
-
-PyTorch:   tensor[:, i]         
-Jittor:    index_select(tensor, 1, jt.array([i])).squeeze(1)
-
-For example, if your code looks like this::
-
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
-
-It can be changed to this::
-
-    optimizer.zero_grad()
-    optimizer.backward(loss)
-    optimizer.step()
-
-Or more concise::
-
-    optimizer.step(loss)
-
-The step function will automatically zero grad and backward.
-
-参数梯度访问方式
-p.grad()  -> p.opt_grad()
-
-nn.utils.clip_grad_norm_(self.model.parameters(), 0.1)
-self.optimizer.clip_grad_norm(0.1)  
-
-model.save()
-model.load()
-
-
-torch.nonzero(as_tuple=False):
--> jt.nonzero() 没有as_tuple参数
- 
+> 以上即将 DMANet PyTorch 版本迁移至 Jittor 的核心要点，更多细节请参阅官方 API 文档。

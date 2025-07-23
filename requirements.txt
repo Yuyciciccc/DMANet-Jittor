@@ -1,0 +1,9 @@
+torch
+numpy
+numba
+pyyaml
+tensorboard
+opencv-python
+tqdm
+matplotlib
+tensorboard
